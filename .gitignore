@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# 사용자 설정 (모드·공 색)
+settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
