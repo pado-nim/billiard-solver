@@ -53,7 +53,8 @@ def test_reads_aim_angle_and_agrees_with_solver(seed):
     assert aim is not None
     assert abs((aim["angle"] - best.angle + 180) % 360 - 180) < 0.08
     pv = aimpreview.analyze(det2, aim, dict(config.DEFAULT, mode="4ball"))
-    assert pv["ok_powers"], pv["why"]                    # 솔버가 추천한 각도로 조준하면 득점으로 나와야 한다
+    assert pv["scored"], pv["why"]                       # 솔버가 추천한 각도로 조준하면 득점 경로로 나와야 한다
+    assert pv["ok_powers"]                               # 그 힘들 중 일부는 실제 감속을 넣어도 득점
     assert pv["ring_gap"] is not None and pv["ring_gap"] < 0.3
 
 
@@ -67,13 +68,15 @@ def test_near_miss_gives_working_fix(seed):
     det2 = detect(img)
     aim = aimpreview.read_aim(img, det2, "white")
     pv = aimpreview.analyze(det2, aim, dict(config.DEFAULT, mode="4ball"))
-    if pv["ok_powers"]:
-        return                                           # 틀린 각도도 우연히 득점이면 통과
-    assert pv["why"] and not pv["scored"]
+    if pv["scored"]:
+        return                                           # 틀린 각도도 우연히 득점 경로면 통과
+    assert pv["why"]
     fx = pv["fix"]
     assert fx is not None
-    s2 = Solver(Params(), "4ball", "white").setup(det2)
-    assert sv._ok(s2, fx["angle"], fx["power"])          # 알려준 보정 각도·힘으로 치면 실제로 득점
+    sv2 = Solver(Params(), "4ball", "white")
+    s2 = sv2.setup(det2)
+    ok, _ = aimpreview._geo_ok(sv2, s2, fx["angle"], "4ball")
+    assert ok                                            # 알려준 보정 각도로 치면 실제로 득점 경로
 
 
 def test_no_aim_line_returns_none():
@@ -86,3 +89,53 @@ def test_korean_particle():
     assert aimpreview._eul("빨1") == "빨1을"
     assert aimpreview._eul("빨2") == "빨2를"
     assert aimpreview._eul("노란공") == "노란공을"
+
+
+@pytest.mark.parametrize("follow", [0.0, 0.3, 0.7])
+def test_follows_game_guide_after_ball_contact(follow):
+    """게임이 링에서 그려 주는 '맞은 뒤 수구 방향' 안내선을 읽어서 그 방향 그대로 경로를 이어야 한다."""
+    for seed in range(8):
+        img, det, sv, s, shots = _setup(seed, "4ball")
+        if not shots:
+            continue
+        ang = shots[0].angle
+        q = Params(follow=follow)
+        tr = Solver(q, "4ball", "white")
+        tr.p = q
+        t = tr.simulate(s, ang, 100)
+        if not t.events or t.events[0].kind != "ball" or len(t.points) < 3:
+            continue
+        e = t.events[0]
+        nx, ny = t.points[e.idx + 1][0] - e.x, t.points[e.idx + 1][1] - e.y
+        n = math.hypot(nx, ny)
+        if n < 6 * det.radius:
+            continue
+        ux, uy = nx / n, ny / n
+        cue = s["pos"][s["cue"]]
+        _draw_aim(img, det, ang, sv, s)
+        r = det.radius
+        synth.ghost_ring(img, e.x + ux * 5 * r, e.y + uy * 5 * r, r=0.01, to=(e.x + ux * 1.3 * r, e.y + uy * 1.3 * r))
+        det2 = detect(img)
+        aim = aimpreview.read_aim(img, det2, "white")
+        g = aim["guide"]
+        assert g is not None and g["kind"] == "ball"
+        assert abs(g["follow"] - follow) < 0.08
+        pv = aimpreview.analyze(det2, aim, dict(config.DEFAULT, mode="4ball"))
+        geo = pv["geo"]
+        k = geo.events[0].idx
+        gx, gy = geo.points[k + 1][0] - geo.points[k][0], geo.points[k + 1][1] - geo.points[k][1]
+        dev = math.degrees(math.acos(max(-1, min(1, (gx * ux + gy * uy) / math.hypot(gx, gy)))))
+        assert dev < 1.0                                  # 우리 경로가 게임 안내선과 1도 안으로 같은 방향
+        return
+    pytest.skip("no suitable layout")
+
+
+def test_geometric_path_is_not_distance_limited():
+    """경로는 힘(거리)과 상관없이 이벤트 여러 개까지 이어져야 한다."""
+    img, det, sv, s, shots = _setup(0, "4ball")
+    _draw_aim(img, det, shots[0].angle, sv, s)
+    det2 = detect(img)
+    aim = aimpreview.read_aim(img, det2, "white")
+    pv = aimpreview.analyze(det2, aim, dict(config.DEFAULT, mode="4ball"))
+    assert len(pv["geo"].events) == aimpreview.GEO_EVENTS
+    assert all(len(pv["geo"].points) >= 2 for _ in [0])

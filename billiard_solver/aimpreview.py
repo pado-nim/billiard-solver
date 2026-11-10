@@ -1,11 +1,13 @@
 """내 조준 시뮬레이션 (F5).
 
-게임이 그려 주는 조준선(수구에서 나가는 흰 선)과 그 끝의 고스트볼 링을 읽어서
-지금 조준 방향을 알아내고, 그 방향 그대로 쳤을 때 수구·목적구가 어떻게 갈지 계산한다.
+게임이 그려 주는 조준선(수구에서 나가는 흰 선), 그 끝의 고스트볼 링, 링에서 나가는 안내선을 읽어서
+지금 조준대로 치면 수구가 어디로 가는지 끝까지 그린다.
 
-- 힘 30~100%(5% 간격)로 전부 쳐 보고 득점되는 힘 범위를 찾는다
-- 득점이 안 되면 왜 안 되는지(쿠션 부족, 2적구를 공 몇 개 차이로 놓침, 상대 공 맞음 등)를 말해 준다
-- 조준을 조금만 돌리면 득점되는 각도가 있으면 가장 가까운 것을 같이 보여 준다
+- 첫 충돌 뒤 방향은 게임 안내선을 그대로 따른다 (공에 맞은 뒤 수구가 꺾이는 방향, 쿠션 반사각)
+- 경로는 거리 제한 없이 이벤트 8개(쿠션·공)까지 그린다. 직선 물리라 경로 모양은 힘과 상관없고,
+  힘은 "어디서 멈추는지"만 바꾼다 → 경로 위에 40/60/80/100% 예상 정지 위치를 표시
+- 득점 판정은 경로(방향) 기준. 필요한 힘은 예상치로 따로 알려 준다
+- 득점 경로가 아니면 왜 아닌지와, 조준을 조금 돌리면 득점되는 가장 가까운 각도를 알려 준다
 """
 import math
 
@@ -13,9 +15,12 @@ import cv2
 import numpy as np
 
 from . import config
-from .solver import judge
+from .physics import Params, Trace, trace_ball
+from .solver import _score_event_index, judge
 
 POWERS = list(range(30, 101, 5))
+MARK_POWERS = (40, 60, 80, 100)   # 경로 위에 예상 정지 위치를 찍을 힘
+GEO_EVENTS = 8                    # 거리 제한 없이 그릴 이벤트(쿠션·공) 수
 FIX_RANGE = 3.0      # 근처 득점 각도를 찾는 범위 (±도)
 FIX_STEP = 0.05
 
@@ -152,7 +157,92 @@ def read_aim(img, det, cue_color):
             w = 0.7
             angle = math.degrees(math.atan2(w * math.sin(math.radians(ra)) + (1 - w) * math.sin(math.radians(angle)),
                                             w * math.cos(math.radians(ra)) + (1 - w) * math.cos(math.radians(angle)))) % 360
-    return {"angle": angle, "ring": ring}
+    guide = _read_guide(pts, ring, d, det, cue) if ring is not None else None
+    return {"angle": angle, "ring": ring, "guide": guide}
+
+
+def _read_guide(pts, ring, d_in, det, cue):
+    """링에서 나가는 게임 안내선. 공에 맞는 조준이면 맞은 뒤 수구가 가는 방향,
+    쿠션에 맞는 조준이면 반사된 방향을 돌려준다."""
+    r = det.radius
+    ring = np.array(ring)
+    rel = pts - ring
+    dist = np.hypot(rel[:, 0], rel[:, 1])
+    sel = (dist > r * 1.3) & (dist < r * 6)
+    if sel.sum() < 10:
+        return None
+    ang = np.degrees(np.arctan2(rel[sel, 1], rel[sel, 0])) % 360
+    back = math.degrees(math.atan2(-d_in[1], -d_in[0])) % 360
+    hist, edges = np.histogram(ang, bins=360, range=(0, 360))
+    sm = np.convolve(np.r_[hist[-2:], hist, hist[:2]], np.ones(5), "valid")
+    rays = []
+    for _ in range(4):
+        i = int(np.argmax(sm))
+        if sm[i] < 8:
+            break
+        a = edges[i] + 0.5
+        sm[max(0, i - 8):i + 9] = 0
+        if abs((a - back + 180) % 360 - 180) < 8:        # 들어온 조준선 자신
+            continue
+        dd = np.array([math.cos(math.radians(a)), math.sin(math.radians(a))])
+        v = pts - ring
+        al = v @ dd
+        pp = np.abs(v[:, 0] * dd[1] - v[:, 1] * dd[0])
+        bp = pts[(al > r * 1.25) & (al < r * 12) & (pp < r * 0.3)]
+        if len(bp) < 15:
+            continue
+        vx, vy, _, _ = cv2.fitLine(bp.astype(np.float32), cv2.DIST_HUBER, 0, 0.01, 0.01).flatten()
+        u = np.array([vx, vy])
+        if u @ dd < 0:
+            u = -u
+        rays.append({"dir": u, "n": len(bp)})
+    if not rays:
+        return None
+
+    # 링이 어떤 공에 닿아 있나 (공 중심 거리 ≈ 2r)
+    target = None
+    for i, b in enumerate(det.balls):
+        if b is cue:
+            continue
+        if abs(math.hypot(b["x"] - ring[0], b["y"] - ring[1]) - 2 * r) < 0.35 * r:
+            target = i
+    if target is not None:
+        b = det.balls[target]
+        nrm = np.array([b["x"] - ring[0], b["y"] - ring[1]])
+        nrm /= np.linalg.norm(nrm)
+        tang = d_in - float(d_in @ nrm) * nrm
+        if np.linalg.norm(tang) < 0.05:
+            return {"kind": "ball", "target": target, "cue_dir": None}     # 정면 충돌: 수구는 거의 멈춤
+        tang /= np.linalg.norm(tang)
+        cue_ray = max(rays, key=lambda q: float(q["dir"] @ tang))
+        if float(cue_ray["dir"] @ tang) < 0.5:
+            return {"kind": "ball", "target": target, "cue_dir": None}
+        u = cue_ray["dir"]
+        cut = math.acos(min(1.0, abs(float(nrm @ d_in))))
+        dev = math.atan2(float(u @ nrm), float(u @ tang))     # 접선에서 진행 방향(앞)으로 꺾인 각
+        # 우리 물리: 맞은 뒤 수구 = 접선 성분 + follow × 법선 성분.  게임 안내선 각도로 follow를 거꾸로 구한다
+        follow = math.tan(dev) * math.tan(cut) if 3 < math.degrees(cut) < 87 else None
+        return {"kind": "ball", "target": target, "cue_dir": u, "normal": nrm,
+                "cut": math.degrees(cut), "follow": follow}
+
+    # 쿠션에 닿은 링
+    x0, y0, x1, y1 = det.table.inner
+    gaps = {"L": ring[0] - x0 - r, "R": x1 - ring[0] - r, "T": ring[1] - y0 - r, "B": y1 - ring[1] - r}
+    side = min(gaps, key=lambda k: abs(gaps[k]))
+    if abs(gaps[side]) > 0.6 * r:
+        return None
+    n = np.array([1.0, 0.0]) if side in ("L", "R") else np.array([0.0, 1.0])
+    t = np.array([-n[1], n[0]])
+    ray = max(rays, key=lambda q: q["n"])
+    d_out = ray["dir"]
+    vn_i, vt_i = float(d_in @ n), float(d_in @ t)
+    vn_o, vt_o = float(d_out @ n), float(d_out @ t)
+    if vn_i * vn_o >= 0 or abs(vn_i) < 1e-3 or abs(vn_o) < 1e-3:
+        return None
+    ratio = None
+    if abs(vt_i) > 0.02 and vt_i * vt_o > 0:
+        ratio = (abs(vt_o) / abs(vn_o)) / (abs(vt_i) / abs(vn_i))
+    return {"kind": "cushion", "side": side, "out_dir": d_out, "ratio": ratio}
 
 
 # ---------------------------------------------------------------- 결과 설명
@@ -263,49 +353,97 @@ def _runs(vals):
 
 
 # ---------------------------------------------------------------- 계산
+def _params_from_guide(guide):
+    """게임 안내선에 맞춘 물리값. 맞은 뒤 수구 방향·쿠션 반사각을 게임이 보여 주는 대로 쓴다."""
+    p = Params()
+    if not guide:
+        return p, None
+    if guide["kind"] == "ball" and guide.get("follow") is not None:
+        p.follow = float(np.clip(guide["follow"], -1.0, 1.5))
+        return p, "ball"
+    if guide["kind"] == "cushion" and guide.get("ratio"):
+        p.cushion_f = float(np.clip(guide["ratio"], 0.3, 1.8)) * p.cushion_e
+        return p, "cushion"
+    return p, None
+
+
+def _geo(sv, s, angle):
+    """거리 제한 없는 경로 (감속 0). 직선 물리라 모양은 힘과 상관없다."""
+    q = Params.from_dict(sv.p.to_dict())
+    q.decel, q.damping = 1e-6, 0.0
+    return trace_ball(s["pos"][s["cue"]], angle, q.v0(100), s["pos"], {s["cue"]}, s["box"], s["r"], s["L"], q,
+                      max_events=GEO_EVENTS)
+
+
+def _cut_at_score(tr, s):
+    """득점 순간까지만 남긴 경로 (그 뒤에 다른 공을 맞는 건 판정에서 뺀다)."""
+    k = _score_event_index(tr, s["targets"], s["need"])
+    hit = {e.target for e in tr.events[:k + 1] if e.kind == "ball"} & set(s["targets"])
+    if len(hit) < (s["need"] or len(set(s["targets"]))):
+        return tr, None
+    e = tr.events[k]
+    return Trace(points=tr.points[:e.idx + 1], events=tr.events[:k + 1], object_paths=tr.object_paths), k
+
+
+def _geo_ok(sv, s, angle, mode):
+    tr = _geo(sv, s, angle)
+    cut, k = _cut_at_score(tr, s)
+    return k is not None and judge(cut, mode, s["targets"], s["forbidden"], s["need"])[0], tr
+
+
 def analyze(det, aim, cfg):
     """조준 각도로 친 결과. 반환 dict (오류면 {"error": 이유})."""
     sv = config.make_solver(cfg)
     s = sv.setup(det)
     if s is None:
         return {"error": sv.fail_reason or "setup"}
+    sv.p, matched = _params_from_guide(aim.get("guide"))
     mode = cfg["mode"]
     names = ball_names(det)
     angle = aim["angle"]
 
-    traces = {p: sv.simulate(s, angle, p) for p in POWERS}
-    ok_powers = [p for p in POWERS if judge(traces[p], mode, s["targets"], s["forbidden"], s["need"])[0]]
-    runs = _runs(set(ok_powers))
-    if runs:
-        best = max(runs, key=len)
-        show = best[len(best) // 2]
+    # 1) 방향 기준 경로 (거리 무제한)
+    scored, geo = _geo_ok(sv, s, angle, mode)
+    cut, k = _cut_at_score(geo, s)
+    judged = cut if k is not None else geo
+    if scored:
+        why = "득점 경로!"
     else:
-        show = 70
-    tr = traces[show]
-    scored, why = describe(tr, s, mode, names)
+        _, why = describe(judged, s, mode, names)
 
-    # 조준을 조금 돌리면 득점되는 가장 가까운 각도 (지금 조준이 이미 득점이면 생략)
+    # 2) 힘: 실제 감속을 넣고 30~100% 전부 (예상치)
+    real = {p: sv.simulate(s, angle, p) for p in POWERS}
+    ok_powers = [p for p in POWERS if judge(real[p], mode, s["targets"], s["forbidden"], s["need"])[0]]
+    marks = []
+    for p in MARK_POWERS:
+        tr = real[p]
+        if len(tr.events) < GEO_EVENTS:
+            marks.append((p, tr.points[-1]))
+
+    # 3) 득점 경로가 아니면 조준을 조금 돌려서 되는 가장 가까운 각도
     fix = None
-    if not ok_powers:
+    if not scored:
         steps = int(FIX_RANGE / FIX_STEP)
-        for k in range(1, steps + 1):
+        for kk in range(1, steps + 1):
             for sign in (1, -1):
-                a = (angle + sign * k * FIX_STEP) % 360
-                good = [p for p in range(40, 101, 10) if sv._ok(s, a, p)]
-                if good:
-                    pw = good[len(good) // 2]
-                    fix = {"delta": sign * k * FIX_STEP, "angle": a, "power": pw,
-                           "trace": sv.simulate(s, a, pw)}
+                a = (angle + sign * kk * FIX_STEP) % 360
+                ok, tr = _geo_ok(sv, s, a, mode)
+                if ok:
+                    pw = [p for p in POWERS if sv._ok(s, a, p)]
+                    fix = {"delta": sign * kk * FIX_STEP, "angle": a, "trace": _cut_at_score(tr, s)[0],
+                           "power": pw[0] if pw else None}
                     break
             if fix:
                 break
 
-    # 게임 조준선의 첫 충돌 위치(링)와 우리 계산의 첫 충돌 위치 비교 (참고용)
-    first = next((e for e in tr.events), None)
+    first = next((e for e in geo.events), None)
     ring_gap = None
     if aim.get("ring") and first is not None:
         ring_gap = math.hypot(first.x - aim["ring"][0], first.y - aim["ring"][1]) / s["r"]
 
-    return {"angle": angle, "power": show, "trace": tr, "scored": scored, "why": why,
-            "sequence": _sequence(tr, names), "ok_powers": ok_powers, "runs": runs,
-            "fix": fix, "setup": s, "mode": mode, "ring": aim.get("ring"), "ring_gap": ring_gap}
+    seq_tr = cut if k is not None else Trace(points=geo.points, events=geo.events[:6])
+    return {"angle": angle, "geo": geo, "score_k": k, "scored": scored, "why": why,
+            "sequence": _sequence(seq_tr, names), "ok_powers": ok_powers, "runs": _runs(set(ok_powers)),
+            "min_power": ok_powers[0] if ok_powers else None, "marks": marks, "fix": fix, "setup": s,
+            "mode": mode, "ring": aim.get("ring"), "ring_gap": ring_gap, "matched": matched,
+            "follow": sv.p.follow}

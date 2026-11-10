@@ -165,7 +165,8 @@ class App:
 
     def _preview_msg(self, pv):
         if pv["scored"]:
-            return f"내 조준 {pv['angle']:.2f}°: 힘 {pv['power']}%로 득점!"
+            need = f", 필요한 힘 {pv['min_power']}% 이상(예상)" if pv["min_power"] else ", 세게 치세요"
+            return f"내 조준 {pv['angle']:.2f}°: 득점 경로{need}"
         if pv["fix"]:
             way = "시계" if pv["fix"]["delta"] > 0 else "반시계"
             return f"내 조준 {pv['angle']:.2f}°: {pv['why']}. {way} 방향 {abs(pv['fix']['delta']):.2f}° 돌리면 득점"
