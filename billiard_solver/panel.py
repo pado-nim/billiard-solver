@@ -13,6 +13,7 @@ FG = "#e8eaed"
 SUB = "#9aa0a6"
 ACC = "#f5c542"
 ON = "#3b82f6"
+AIM = "#c026d3"
 RED = "#e05252"
 FONT = "Malgun Gothic"
 
@@ -97,6 +98,17 @@ class Panel:
         self.main_btn = button(body, "분석  (F2)", app.on_f2, bg=ACC, fg="#1b1b1b", size=15, bold=True, ipady=14)
         self.main_btn.pack(fill="x")
 
+        # 내 조준 시뮬레이션: 지금 게임 조준선대로 치면 어떻게 되나
+        af = tk.Frame(body, bg=BG)
+        af.pack(fill="x", pady=(P(8), 0))
+        self.aim_btn = button(af, "내 조준 시뮬  (F5)", app.aim_preview, bg=AIM, fg="#ffffff", size=12, bold=True,
+                              ipady=9, width=1)
+        self.aim_btn.grid(row=0, column=0, sticky="nsew", padx=(0, P(3)))
+        self.live_btn = button(af, "실시간: 끔", app.toggle_live, size=11, ipady=9, width=1)
+        self.live_btn.grid(row=0, column=1, sticky="nsew", padx=(P(3), 0))
+        af.columnconfigure(0, weight=3, uniform="aim")
+        af.columnconfigure(1, weight=2, uniform="aim")
+
         # 인식 결과 한 줄 (공을 몇 개 찾았는지 바로 보이게)
         self.det_lbl = label(body, "", 10, fg=SUB, anchor="w", justify="left")
         self.det_lbl.pack(fill="x", pady=(P(8), 0))
@@ -130,7 +142,7 @@ class Panel:
         self._last = None
 
     def _det_text(self):
-        last = getattr(self.app, "last", None)
+        last = getattr(self.app, "preview", None) or getattr(self.app, "last", None)
         if not last or last[0] is None:
             return ""
         det = last[0]
@@ -160,7 +172,7 @@ class Panel:
         a = self.app
         mode, cue = a.cfg.get("mode"), a.cfg.get("cue_color")
         det_txt = self._det_text()
-        key = (phase, msg, mode, cue, a.show_all, det_txt)
+        key = (phase, msg, mode, cue, a.show_all, det_txt, a.live)
         if key == self._last:
             return
         self._last = key
@@ -172,13 +184,17 @@ class Panel:
                         fg=("#1b1b1b" if sel else FG))
         self.all_btn.configure(text="후보 하나만  (F8)" if a.show_all else "후보 전부  (F8)")
 
-        names = {"idle": "대기", "busy": "계산 중…", "shown": "분석 완료"}
+        names = {"idle": "대기", "busy": "계산 중…", "shown": "분석 완료", "preview": "내 조준", "live": "실시간 조준"}
         self.phase_lbl.configure(text=names.get(phase, phase))
         # 창 높이를 내용에 맞춘다 (사용자가 늘린 폭은 유지)
         self.win.after_idle(self._fit_height)
         main = {"idle": ("분석  (F2)", ACC, "normal"),
                 "shown": ("다시 분석  (F2)", ACC, "normal"),
+                "preview": ("분석  (F2)", ACC, "normal"),
+                "live": ("분석  (F2)", ACC, "normal"),
                 "busy": ("계산 중…", BG2, "disabled")}[phase]
+        self.live_btn.configure(text="실시간: 켬" if a.live else "실시간: 끔",
+                                bg=AIM if a.live else BG2, fg="#ffffff" if a.live else FG)
         self.main_btn.configure(text=main[0], bg=main[1], state=main[2],
                                 fg="#1b1b1b" if main[2] == "normal" else SUB)
 

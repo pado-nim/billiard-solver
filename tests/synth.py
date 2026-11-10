@@ -44,10 +44,15 @@ def ball(img, x, y, color, mark=None, r=R_PX):
 
 def ghost_ring(img, x, y, r=R_PX, to=None):
     """게임 조준선 끝의 속 빈 흰 원(고스트볼 링)과 거기로 들어오는 선. 검은 테두리 포함."""
+    S = 16                                          # 소수점 좌표로 그리기 (shift=4)
     for col, t in (((30, 30, 30), 7), ((240, 240, 240), 4)):
-        cv2.circle(img, (int(x), int(y)), int(r), col, t)
+        cv2.circle(img, (int(round(x * S)), int(round(y * S))), int(round(r * S)), col, t, cv2.LINE_AA, shift=4)
         if to is not None:
-            cv2.line(img, (int(x), int(y)), (int(to[0]), int(to[1])), col, t)
+            dx, dy = to[0] - x, to[1] - y
+            n = math.hypot(dx, dy) or 1.0
+            sx, sy = x + dx / n * r, y + dy / n * r       # 링 테두리에서 시작
+            cv2.line(img, (int(round(sx * S)), int(round(sy * S))), (int(round(to[0] * S)), int(round(to[1] * S))),
+                     col, t, cv2.LINE_AA, shift=4)
 
 
 def table_pos(inner, u, v):

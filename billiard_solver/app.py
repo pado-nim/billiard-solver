@@ -4,7 +4,8 @@ F2를 누르면 화면을 한 장 찍어서 테이블과 공을 찾고, 득점 �
 조작은 조작 패널(버튼 창)이나 단축키로 한다.
 
   F2  분석 (다시 누르면 다시 분석)        F3  선 지우기
-  F4  내 공 색 (흰공/노란공)               F6  모드: 4구 → 4구 마무리(3쿠션) → 3구(3쿠션)
+  F4  내 공 색 (흰공/노란공)               F5  내 조준 시뮬레이션 (지금 조준대로 치면 어떻게 되나)
+  F6  모드: 4구 → 4구 마무리(3쿠션) → 3구(3쿠션)
   F7  다음 후보                            F8  후보 전부 / 하나만
   Ctrl+Shift+Q  종료
 
@@ -19,14 +20,14 @@ import tkinter as tk
 
 import numpy as np
 
-from . import config, render
+from . import aimpreview, config, render
 from .detector import detect
 from .solver import MODES
 
 TRANSPARENT = "#010101"
 user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
-VK = {"F2": 0x71, "F3": 0x72, "F4": 0x73, "F6": 0x75, "F7": 0x76, "F8": 0x77,
+VK = {"F2": 0x71, "F3": 0x72, "F4": 0x73, "F5": 0x74, "F6": 0x75, "F7": 0x76, "F8": 0x77,
       "CTRL": 0x11, "SHIFT": 0x10, "Q": 0x51}
 
 
@@ -72,10 +73,14 @@ class App:
         self.show_all = True
         self.selected = 0
         self.busy = False
-        self.last = None              # (det, shots, setup)
+        self.last = None              # (det, shots, setup)   F2 분석 결과
+        self.preview = None           # (det, 결과)            F5 내 조준 시뮬레이션 결과
+        self.live = False             # 실시간 따라가기 (조준을 움직이면 계속 다시 계산)
+        self._live_det = None         # 실시간 모드에선 공 위치를 잠깐 재사용 (조준선만 다시 읽음)
+        self._live_det_t = 0.0
         self.results = queue.Queue()
         self.keys = {}
-        self.msg = "F2: 분석"
+        self.msg = "F2: 분석  ·  F5: 내 조준 시뮬레이션"
         self._last_status = None
         from .panel import Panel
         self.panel = Panel(self)
@@ -99,8 +104,12 @@ class App:
 
     # ---------- 상태 ----------
     def phase(self):
+        if self.live:
+            return "live"
         if self.busy:
             return "busy"
+        if self.preview is not None:
+            return "preview"
         return "shown" if self.last is not None else "idle"
 
     # ---------- 메인 루프 ----------
@@ -139,9 +148,28 @@ class App:
                 self.msg = f"[{kor}] 1순위: 각도 {sh.angle:.2f}° · 힘 {sh.power:.0f}% · 안정성 {sh.robust:.0%}"
             else:
                 self.msg = f"[{kor}] 득점 경로를 못 찾았어요"
+        elif kind == "preview":
+            det, pv, err = item[1]
+            if pv is not None:
+                self.preview = (det, pv)
+                self.last = None
+                self.msg = self._preview_msg(pv)
+            elif not (self.live and self.preview is not None):    # 실시간 중엔 한 번 못 읽어도 이전 것 유지
+                self.preview = None
+                self.msg = err
+            if self.live:
+                self.root.after(250, self._live_next)
         elif kind == "error":
             self.msg = item[1]
         self.redraw()
+
+    def _preview_msg(self, pv):
+        if pv["scored"]:
+            return f"내 조준 {pv['angle']:.2f}°: 힘 {pv['power']}%로 득점!"
+        if pv["fix"]:
+            way = "시계" if pv["fix"]["delta"] > 0 else "반시계"
+            return f"내 조준 {pv['angle']:.2f}°: {pv['why']}. {way} 방향 {abs(pv['fix']['delta']):.2f}° 돌리면 득점"
+        return f"내 조준 {pv['angle']:.2f}°: {pv['why']}"
 
     def pressed(self, name, combo=False):
         down = key_down(VK[name])
@@ -161,6 +189,8 @@ class App:
             self.clear()
         if self.pressed("F4"):
             self.set_cue("yellow" if self.cfg["cue_color"] == "white" else "white")
+        if self.pressed("F5"):
+            self.aim_preview()
         if self.pressed("F6"):
             cur = self.cfg["mode"] if self.cfg["mode"] in MODES else "4ball"
             self.set_mode(MODES[(MODES.index(cur) + 1) % len(MODES)])
@@ -171,15 +201,70 @@ class App:
 
     # ---------- 동작 ----------
     def on_f2(self):
+        self.live = False
         if not self.busy:
             self.solve()
 
     def clear(self):
+        self.live = False
         if self.busy:
             return
         self.last = None
-        self.msg = "F2: 분석"
+        self.preview = None
+        self.msg = "F2: 분석  ·  F5: 내 조준 시뮬레이션"
         self.redraw()
+
+    # ---------- 내 조준 시뮬레이션 (F5) ----------
+    def aim_preview(self):
+        if self.busy:
+            return
+        self.busy = True
+        if not self.live:
+            self.msg = "내 조준 읽는 중..."
+        self.redraw()
+        img = self.grab()
+        cfg = dict(self.cfg)
+        reuse = self._live_det if (self.live and time.time() - self._live_det_t < 2.0) else None
+
+        def work():
+            try:
+                det = reuse or detect(img)
+                if det is None:
+                    self.results.put(("preview", (None, None, "당구대를 못 찾았어요. 게임 화면이 보일 때 F5")))
+                    return
+                if reuse is None:
+                    self._live_det, self._live_det_t = det, time.time()
+                aim = aimpreview.read_aim(img, det, cfg["cue_color"])
+                if aim is None:
+                    self.results.put(("preview", (det, None,
+                                                  "조준선이 안 보여요. 게임에서 조준 중일 때(흰 조준선이 보일 때) F5")))
+                    return
+                pv = aimpreview.analyze(det, aim, cfg)
+                if "error" in pv:
+                    kor = render.KOR_MODE.get(cfg["mode"], cfg["mode"])
+                    why = {"need_2_reds": f"{kor} 모드인데 빨간 공이 2개가 아니에요 (모드 확인)",
+                           "need_3_balls": f"{kor} 모드: 공이 모자라요",
+                           "no_cue": "내 공을 못 찾았어요 (내 공 색 확인 · F4)"}.get(pv["error"], "계산할 수 없어요")
+                    self.results.put(("preview", (det, None, why)))
+                    return
+                self.results.put(("preview", (det, pv, "")))
+            except Exception as e:
+                self.results.put(("preview", (None, None, f"조준 시뮬레이션 오류: {e}")))
+        threading.Thread(target=work, daemon=True).start()
+
+    def toggle_live(self):
+        self.live = not self.live
+        if self.live:
+            self._live_det = None
+            self.msg = "실시간: 게임에서 조준을 움직이면 경로가 따라가요"
+            self.aim_preview()
+        else:
+            self.msg = "실시간 끔"
+        self.redraw()
+
+    def _live_next(self):
+        if self.live and not self.busy:
+            self.aim_preview()
 
     def set_mode(self, mode):
         if mode not in MODES:
@@ -189,6 +274,10 @@ class App:
         kor = render.KOR_MODE[mode]
         if self.busy:
             self.msg = f"모드: {kor} (다음 분석부터 적용)"
+        elif changed and self.preview is not None and not self.live:
+            self.msg = f"모드: {kor} → 내 조준 다시 계산"
+            self.aim_preview()
+            return
         elif changed and self.last is not None:
             self.msg = f"모드: {kor} → 다시 분석"
             self.solve()                     # 분석해 둔 화면이 있으면 새 모드로 바로 다시 계산
@@ -201,6 +290,10 @@ class App:
         changed = color != self.cfg.get("cue_color")
         self._set_cfg("cue_color", color)
         name = "노란공" if color == "yellow" else "흰공"
+        if changed and self.preview is not None and not self.busy and not self.live:
+            self.msg = f"내 공: {name} → 내 조준 다시 계산"
+            self.aim_preview()
+            return
         if changed and self.last is not None and not self.busy:
             self.msg = f"내 공: {name} → 다시 분석"
             self.solve()
@@ -243,6 +336,7 @@ class App:
     def solve(self):
         self.busy = True
         self.last = None
+        self.preview = None
         self.msg = "분석 중..."
         self.redraw()
         img = self.grab()
@@ -265,7 +359,11 @@ class App:
     def redraw(self):
         self.canvas.delete("all")
         k = self.scale
-        if self.last is not None:
+        if self.preview is not None:
+            det, pv = self.preview
+            for p in render.build_preview(det, pv, self.cfg["cue_color"], scale=k):
+                self._draw(p)
+        elif self.last is not None:
             det, shots, setup = self.last
             for p in render.build(det, shots, setup, self.cfg["mode"], self.cfg["cue_color"],
                                   show_all=self.show_all, selected=self.selected, scale=k):
