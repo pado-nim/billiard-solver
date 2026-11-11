@@ -116,6 +116,10 @@ Press F2: it reads a screenshot, detects the table and balls (including balls wi
 It only reads the screen, never touches game files or memory, and does not shoot for you. Please don't use it in matches against other players.
 Not affiliated with Roblox Corporation. Install with `install.bat`, run with `run.bat`. Tests: `pytest`.
 
+## 변경 내역
+
+[CHANGELOG.md](CHANGELOG.md)
+
 ## 라이선스
 
 [MIT](LICENSE)
