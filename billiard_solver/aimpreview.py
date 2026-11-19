@@ -414,7 +414,7 @@ def _params_from_guide(guide):
 def _geo(sv, s, angle):
     """거리 제한 없는 경로 (감속 0). 직선 물리라 모양은 힘과 상관없다."""
     q = Params.from_dict(sv.p.to_dict())
-    q.decel, q.damping = 1e-6, 0.0
+    q.decel = 1e-6
     return trace_ball(s["pos"][s["cue"]], angle, q.v0(100), s["pos"], {s["cue"]}, s["box"], s["r"], s["L"], q,
                       max_events=GEO_EVENTS, english=sv.english)
 
@@ -429,7 +429,7 @@ def _geo_with_guide(sv, s, angle, guide):
     if e0.kind != "ball" or e0.target != guide.get("target"):
         return geo
     q = Params.from_dict(sv.p.to_dict())
-    q.decel, q.damping = 1e-6, 0.0
+    q.decel = 1e-6
     u = guide["cue_dir"]
     ang2 = math.degrees(math.atan2(float(u[1]), float(u[0])))
     rest = trace_ball((e0.x, e0.y), ang2, q.v0(100), s["pos"], {s["cue"], e0.target}, s["box"], s["r"], s["L"], q,
@@ -462,22 +462,21 @@ def analyze(det, aim, cfg, target=None):
     """조준 각도로 친 결과. 반환 dict (오류면 {"error": 이유}).
 
     target: F2 추천 샷(Shot). 있으면 그 당점으로 계산하고, 지금 조준이 추천 각도에서 얼마나 벗어났는지도 알려 준다.
-    게임 안내선(링에서 나가는 선)은 단순 미리보기라 실제와 다르다 (실측: 공에 맞은 뒤 실제로는 훨씬 앞으로 가고,
-    쿠션에선 더 넓게 튄다). 그래서 맞은 뒤 경로는 실측 물리로 그린다.
+    첫 충돌 뒤 방향은 게임 안내선(링에서 나가는 선)을 그대로 따른다 (사용자가 보고 맞추는 선과 같게).
     """
     sv = config.make_solver(cfg)
     s = sv.setup(det)
     if s is None:
         return {"error": sv.fail_reason or "setup"}
-    matched = None
+    sv.p, matched = _params_from_guide(aim.get("guide"))
     if target is not None:
         sv.english = tuple(target.english)
     mode = cfg["mode"]
     names = ball_names(det)
     angle = aim["angle"]
 
-    # 1) 방향 기준 경로 (거리 무제한), 실측 물리
-    geo = _geo(sv, s, angle)
+    # 1) 방향 기준 경로 (거리 무제한), 첫 충돌 뒤는 게임 안내선 방향
+    geo = _geo_with_guide(sv, s, angle, aim.get("guide"))
     cut, k = _cut_at_score(geo, s)
     scored = k is not None and judge(cut, mode, s["targets"], s["forbidden"], s["need"])[0]
     judged = cut if k is not None else geo

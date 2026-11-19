@@ -87,7 +87,9 @@ def build(det, shots, setup, mode, cue_color, show_all=True, selected=0, scale=1
 
     lines = [head]
     for rank, sh in enumerate(shots):
-        first = "  (쿠션 먼저: 덜 정확)" if getattr(sh, "first_cushion", False) else ""
+        first = "  (쿠션 먼저: 최후 수단)" if getattr(sh, "first_cushion", False) else ""
+        if tuple(sh.english) != (0.0, 0.0):
+            first += "  (스핀 세기는 추정)"
         lines.append(f"#{rank + 1}  각도 {sh.angle:6.2f}°  힘 {sh.power:.0f}%  당점 {english_text(sh.english)}  "
                      f"쿠션 {sh.cushions}  안정성 {sh.robust:.0%}{first}")
     for i, t in enumerate(lines):

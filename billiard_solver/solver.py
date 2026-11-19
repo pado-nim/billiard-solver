@@ -29,8 +29,6 @@ class Shot:
     english: tuple = (0.0, 0.0)  # 당점 (좌우 +오른쪽, 상하 +위), 1/3 = 1팁
     first_cushion: bool = False  # 첫 충돌이 쿠션인 샷 (부정확해서 순위를 크게 낮춤)
     length: float = 0.0        # 득점 순간까지 수구가 굴러간 거리 (테이블 긴 변 배수)
-    rob_phys: float = 1.0      # 물리값이 틀려도 들어가는 비율
-    rob_exec: float = 1.0      # 조준·힘·당점을 조금 틀려도 들어가는 비율
 
 
 MODES = ("4ball", "4ball_finish", "3cushion")
@@ -140,7 +138,7 @@ class Solver:
 
     def simulate_speed(self, s, angle, speed):
         return trace_ball(s["pos"][s["cue"]], angle, speed, s["pos"], {s["cue"]},
-                          s["box"], s["r"], s["L"], self.p, english=self.english, roll_start=True)
+                          s["box"], s["r"], s["L"], self.p, english=self.english)
 
     def _ok(self, s, ang, pw):
         return judge(self.simulate(s, ang, pw), self.mode, s["targets"], s["forbidden"], s["need"])[0]
@@ -174,68 +172,6 @@ class Solver:
             hi += 5
         return lo, hi
 
-    def _perturbed(self):
-        """학습한 물리값이 이 정도는 틀릴 수 있다고 보고 만든 '조금 다른 물리' 목록."""
-        if getattr(self, "_pert", None) is not None:
-            return self._pert
-        base = self.p.to_dict()
-        ratio = base["cushion_f"] / max(base["cushion_e"], 1e-6)
-        out = []
-
-        def mk(**ch):
-            d = dict(base)
-            d.update(ch)
-            return Params.from_dict(d)
-        for k in (0.92, 1.08):
-            e = min(base["cushion_e"] * k, 1.0)
-            out.append(mk(cushion_e=e, cushion_f=min(ratio * e, 1.05)))           # 쿠션 반발
-            out.append(mk(cushion_f=min(base["cushion_f"] * k, 1.05)))              # 반사각
-            out.append(mk(v0_max=base["v0_max"] * k))                               # 힘 (세기)
-        for k in (0.7, 1.4):
-            out.append(mk(decel=base["decel"] * k, damping=base["damping"] * k))    # 감속
-        # 공 맞은 뒤 밀림: 3쿠션 성공률을 가장 크게 좌우한다. 아직 덜 배웠으면 넓게 흔들어 본다
-        fs = 0.12 if base.get("follow_n", 0) >= 6 else 0.3
-        for d in (-fs, -fs / 2, fs / 2, fs):
-            out.append(mk(follow=base["follow"] + d))
-        for d in (-0.1, 0.1):
-            out.append(mk(cushion_offset=base["cushion_offset"] + d))              # 쿠션선 위치
-        # 당점 효과의 세기도 게임마다 다를 수 있다 (정중앙 샷엔 영향 없음)
-        for k in (0.6, 1.4):
-            out.append(mk(top_k=base["top_k"] * k, side_k=base["side_k"] * k))
-        self._pert = out
-        return out
-
-    def _robust_phys(self, s, ang, pw):
-        ok = 0
-        keep = self.p
-        try:
-            for q in self._perturbed():
-                self.p = q
-                ok += self._ok(s, ang, pw)
-        finally:
-            self.p = keep
-        return ok / len(self._perturbed())
-
-    def _robust_exec(self, s, ang, pw):
-        """사람이 칠 때 나는 실수: 조준 ±0.1·±0.2도, 힘 ±10%, 당점 ±1팁 (당점을 쓸 때만)."""
-        tries = [(ang + d, pw, self.english) for d in (-0.2, -0.1, 0.1, 0.2)]
-        tries += [(ang, max(5, pw * k), self.english) for k in (0.9, 1.1)]
-        ex, ey = self.english
-        if ex or ey:
-            tries += [(ang, pw, (ex + dx, ey + dy)) for dx, dy in ((-T, 0), (T, 0), (0, -T), (0, T))]
-        keep = self.english
-        ok = 0
-        try:
-            for a, p_, e in tries:
-                self.english = (max(-1.0, min(1.0, e[0])), max(-1.0, min(1.0, e[1])))
-                ok += self._ok(s, a, p_)
-        finally:
-            self.english = keep
-        return ok / len(tries)
-
-    def _robust(self, s, ang, pw):
-        return self._mc_success(s, ang, pw)
-
     MC_N = 32
 
     def _mc_success(self, s, ang, pw, n=None):
@@ -253,13 +189,10 @@ class Solver:
         try:
             for _ in range(n):
                 q = Params.from_dict(base.to_dict())
-                q.follow = base.follow + rng.gauss(0, 0.15)
-                k = math.exp(rng.gauss(0, 0.18))
-                q.decel, q.damping = base.decel * k, base.damping * k
+                q.follow = base.follow + rng.gauss(0, 0.08)
+                q.decel = base.decel * math.exp(rng.gauss(0, 0.18))
                 q.cushion_e = min(1.0, base.cushion_e * (1 + rng.gauss(0, 0.03)))
                 q.cushion_f = min(1.05, q.cushion_e * (base.cushion_f / max(base.cushion_e, 1e-6)) * (1 + rng.gauss(0, 0.08)))  # f는 신뢰도 낮음
-                q.roll_factor = min(1.0, base.roll_factor * (1 + rng.gauss(0, 0.06)))
-                q.obj_transfer = base.obj_transfer * (1 + rng.gauss(0, 0.15))
                 q.cushion_offset = base.cushion_offset + rng.gauss(0, 0.07)
                 ks = math.exp(rng.gauss(0, 0.2))
                 q.top_k, q.side_k = base.top_k * ks, base.side_k * ks
@@ -311,7 +244,6 @@ class Solver:
         if self.mode == "4ball" and cush >= 3:
             extra = cush * 0.6
         rob = self._mc_success(s, ang, pw)
-        rp = rx = rob
         tip = math.hypot(*self.english) * 3            # 몇 팁인지
         # 첫 충돌이 쿠션이면 그 뒤 각도를 정확히 알 수 없다 (게임 물리를 완벽히 모름).
         # 공을 먼저 맞히면 게임이 링·안내선으로 첫 구간을 보여 줘서 정확하다 → 공 먼저 샷을 크게 우대
@@ -322,54 +254,55 @@ class Solver:
             e0 = tr.events[0]
             c0 = s["pos"][s["cue"]]
             first_len = math.hypot(e0.x - c0[0], e0.y - c0[1]) / s["L"]
-        # 실전 득점률(안정성)을 가장 크게 보고, 짧은 경로·적은 쿠션·정중앙에 가까운 당점을 우대
+        # 실전 득점률(안정성)을 가장 크게 보고, 짧은 경로·적은 쿠션을 우대 (쿠션 먼저·스핀은 solve에서 단계로 거름)
         score = ((0.05 + rob) ** 2 * (1 + 0.02 * prange)
-                 / (1 + 0.8 * length) / (1 + 0.15 * extra) / (1 + 0.05 * tip)
-                 / (1 + 0.6 * first_len) * (0.2 if first_cushion else 1.0))
+                 / (1 + 0.8 * length) / (1 + 0.15 * extra) / (1 + 0.05 * tip) / (1 + 0.6 * first_len))
         sh = Shot(ang, pw, win, int(prange // 5), score, tr, cush)
         sh.pmin, sh.pmax = lo, hi
-        sh.robust, sh.rob_phys, sh.rob_exec = rob, rp, rx
+        sh.robust = rob
         sh.score_index = k
         sh.english = self.english
         sh.length = length
         sh.first_cushion = first_cushion
         return sh
 
+    def _search(self, s, english, step, powers):
+        self.english = english
+        n = int(round(360 / step))
+        out = []
+        for center, pw, win in self._scan(s, [i * step for i in range(n)], powers):
+            sh = self._finish(s, center, pw, win, step)
+            if sh:
+                out.append(sh)
+        return out
+
     def solve(self, det, top_n=3):
-        self._pert = None
+        """우선순위: ① 무스핀 + 공 먼저  ② 스핀 + 공 먼저  ③ 쿠션 먼저 (최후의 보루, 무스핀 → 스핀).
+        앞 단계에서 샷이 나오면 뒤 단계는 계산하지 않는다."""
         s = self.setup(det)
         if s is None:
             return [], None
-        shots = []
         try:
-            # 1) 정중앙 당점: 0.25도 간격 전체 탐색
-            self.english = (0.0, 0.0)
-            n = int(round(360 / self.angle_step))
-            angles = [i * self.angle_step for i in range(n)]
-            for center, pw, win in self._scan(s, angles, self.powers):
-                sh = self._finish(s, center, pw, win, self.angle_step)
-                if sh:
-                    shots.append(sh)
-            # 2) 당점(스핀): 0.5도 간격, 힘 40/60/80/100으로 훑는다
-            if self.use_spin:
-                coarse = [i * 0.5 for i in range(720)]
-                for e in ENGLISH:
-                    self.english = e
-                    for center, pw, win in self._scan(s, coarse, (40, 60, 80, 100)):
-                        sh = self._finish(s, center, pw, win, 0.5)
-                        if sh:
-                            shots.append(sh)
+            center = self._search(s, (0.0, 0.0), self.angle_step, self.powers)
+            spin = []
+            tiers = [[x for x in center if not x.first_cushion]]
+            if self.use_spin and not tiers[0]:
+                spin = [x for e in ENGLISH for x in self._search(s, e, 0.5, (40, 60, 80, 100))]
+                tiers.append([x for x in spin if not x.first_cushion])
+            tiers.append([x for x in center if x.first_cushion])
+            if self.use_spin and not any(tiers):
+                spin = spin or [x for e in ENGLISH for x in self._search(s, e, 0.5, (40, 60, 80, 100))]
+                tiers.append([x for x in spin if x.first_cushion])
         finally:
             self.english = (0.0, 0.0)
 
-        shots.sort(key=lambda x: -x.score)
         picked = []
-        for sh in shots:
-            if not all(_angdiff(sh.angle, q.angle) > 3.0 for q in picked):
-                continue
-            picked.append(sh)
-            if len(picked) >= top_n:
-                break
+        for tier in tiers:                       # 앞 단계 샷을 먼저 채우고, 모자라면 다음 단계에서
+            for sh in sorted(tier, key=lambda x: -x.score):
+                if len(picked) >= top_n:
+                    break
+                if all(_angdiff(sh.angle, q.angle) > 3.0 for q in picked):
+                    picked.append(sh)
         return picked, s
 
 

@@ -77,7 +77,7 @@ def test_spin_shot_actually_scores_with_its_english():
         shots, s = sv.solve(det, 3)
         for sh in shots:
             t = trace_ball(s["pos"][s["cue"]], sh.angle, sv.p.v0(sh.power), s["pos"], {s["cue"]}, s["box"],
-                           s["r"], s["L"], sv.p, english=sh.english, roll_start=True)
+                           s["r"], s["L"], sv.p, english=sh.english)
             assert judge(t, "4ball_finish", s["targets"], s["forbidden"], s["need"])[0]
             assert 0.0 <= sh.robust <= 1.0
 
@@ -118,3 +118,12 @@ def test_prefers_ball_first_shots():
             n += 1
             n_ball_first += not shots[0].first_cushion
     assert n_ball_first >= n - 1
+
+
+def test_no_spin_is_default_and_cushion_first_is_last_resort():
+    """무스핀 + 공 먼저 샷이 있으면 스핀·쿠션 먼저 샷은 1순위가 되지 않는다."""
+    for seed in range(8):
+        det = _table(seed)
+        shots, _ = Solver(Params(), "4ball", "white").solve(det, 3)
+        if shots and any(not x.first_cushion and x.english == (0.0, 0.0) for x in shots):
+            assert shots[0].english == (0.0, 0.0) and not shots[0].first_cushion

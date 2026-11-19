@@ -52,9 +52,9 @@ def test_reads_aim_angle_and_agrees_with_solver(seed):
     aim = aimpreview.read_aim(img, det2, "white")
     assert aim is not None
     assert abs((aim["angle"] - best.angle + 180) % 360 - 180) < 0.08
-    # 경로 판정은 정확한 각도로 (모서리를 스치는 샷은 0.01도 차이로도 길이 바뀐다)
+    # 경로 판정은 정확한 각도·공 위치로 (쿠션 여러 번 도는 샷은 0.01도·1픽셀 차이로도 길이 바뀐다)
     exact = dict(aim, angle=best.angle)
-    pv = aimpreview.analyze(det2, exact, dict(config.DEFAULT, mode="4ball"))
+    pv = aimpreview.analyze(det, exact, dict(config.DEFAULT, mode="4ball"))
     assert pv["scored"], pv["why"]                       # 솔버가 추천한 각도로 조준하면 득점 경로로 나와야 한다
     assert pv["ok_powers"]                               # 그 힘들 중 일부는 실제 감속을 넣어도 득점
     assert pv["ring_gap"] is not None and pv["ring_gap"] < 0.3
@@ -93,10 +93,9 @@ def test_korean_particle():
     assert aimpreview._eul("노란공") == "노란공을"
 
 
-@pytest.mark.parametrize("follow", [0.0, 0.3])          # 게임 안내선은 항상 접선(≈0)으로 그린다
-def test_reads_game_guide_but_uses_measured_physics(follow):
-    """게임이 링에서 그리는 '맞은 뒤 수구 방향' 안내선은 읽지만(진단용), 경로는 실측 물리로 그린다.
-    (실제 영상 실측: 게임 안내선은 접선 방향인데 실제 공은 훨씬 앞으로 간다)"""
+@pytest.mark.parametrize("follow", [0.0, 0.3])
+def test_follows_game_guide_after_first_contact(follow):
+    """게임이 링에서 그리는 '맞은 뒤 수구 방향' 안내선을 읽어서, F5 경로도 그 방향 그대로 이어 그린다."""
     for seed in range(8):
         img, det, sv, s, shots = _setup(seed, "4ball")
         if not shots:
@@ -123,7 +122,8 @@ def test_reads_game_guide_but_uses_measured_physics(follow):
         assert g is not None and g["kind"] == "ball"
         assert abs(g["follow"] - follow) < 0.15                  # 안내선은 제대로 읽는다
         pv = aimpreview.analyze(det2, aim, dict(config.DEFAULT, mode="4ball"))
-        assert abs(pv["follow"] - Params().follow) < 1e-9       # 경로는 실측 물리값
+        assert pv["matched"] == "ball"
+        assert abs(pv["follow"] - follow) < 0.15                 # 경로도 안내선 방향
         return
     pytest.skip("no suitable layout")
 
