@@ -38,6 +38,8 @@ class Params:
     top_k: float = _C("top_k")                     # 상하 당점 1(3팁)일 때 follow에 더해지는 양
     side_k: float = _C("side_k")                   # 좌우 당점 1(3팁)일 때 쿠션에서 옆으로 밀리는 속도 (법선 속도 대비)
     side_decay: float = _C("side_decay")           # 쿠션 한 번 맞을 때마다 남는 좌우 회전 비율
+    bend_ratio: float = _C("bend_ratio")           # 쿠션 뒤 휘고 나서의 반사 비율 tan(반사)/tan(입사) (실제 공)
+    bend_dist: float = _C("bend_dist")             # 쿠션 뒤 휘어서 각도가 바뀌기까지 거리 (공 반지름 단위)
 
     @classmethod
     def from_dict(cls, d):
@@ -161,7 +163,10 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
     side = float(english[0])                  # 남아 있는 좌우 회전
     top = float(english[1])                   # 공에 처음 맞을 때 쓰이는 상하 회전
 
-    for _ in range(max_events):
+    bend = None                               # 쿠션 뒤 휘기 전까지 남은 거리(px)와 휜 뒤 방향
+    events = guard = 0
+    while events < max_events and guard < 4 * max_events + 8:
+        guard += 1
         sp = math.hypot(vx, vy)
         if sp <= p.stop_speed:
             break
@@ -169,31 +174,50 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
         dist = p.budget(sp) * L
         if dist <= 0.5:
             break
-        hit = _hit_along(px, py, dx, dy, dist, box, balls, gone, R2)
+        reach = min(dist, bend[0]) if bend else dist
+        hit = _hit_along(px, py, dx, dy, reach, box, balls, gone, R2)
         if hit is None:
-            tr.points.append((px + dx * dist, py + dy * dist))
+            px, py = px + dx * reach, py + dy * reach
+            tr.points.append((px, py))
+            if bend and reach < dist:            # 휘는 지점: 방향만 바꾸고 계속 (이벤트 아님)
+                v_now = p.speed_from_budget((dist - reach) / L)
+                vx, vy = bend[1] * v_now, bend[2] * v_now
+                bend = None
+                continue
             break
+        if bend:
+            bend = (bend[0] - hit[0], bend[1], bend[2])
         px, py = px + dx * hit[0], py + dy * hit[0]
         v_now = p.speed_from_budget((dist - hit[0]) / L)
         vx, vy = dx * v_now, dy * v_now
         tr.points.append((px, py))
+        events += 1
+        bend = None
 
         if hit[1] == "wall":
             wall = hit[2]
             tr.events.append(Event("cushion", px, py, side=wall, idx=len(tr.points) - 1))
             onx, ony = {"L": (-1.0, 0.0), "R": (1.0, 0.0), "T": (0.0, -1.0), "B": (0.0, 1.0)}[wall]
             vn_in = abs(vx * onx + vy * ony)
+            g = p.reflect_ratio(vx, vy) if wall in ("L", "R") else p.reflect_ratio(vy, vx)   # 게임 안내선 반사 비율
             if wall in ("L", "R"):
-                q = p.reflect_ratio(vx, vy) * p.cushion_e
-                vx, vy = -vx * p.cushion_e, vy * q
+                vx, vy = -vx * p.cushion_e, vy * g * p.cushion_e
             else:
-                q = p.reflect_ratio(vy, vx) * p.cushion_e
-                vx, vy = vx * q, -vy * p.cushion_e
+                vx, vy = vx * g * p.cushion_e, -vy * p.cushion_e
             if abs(side) > 1e-6:
                 # 좌우 회전: 오른쪽 당점으로 위쪽 쿠션에 맞으면 오른쪽으로 튄다
                 kick = p.side_k * side * vn_in
                 vx, vy = vx - kick * ony, vy + kick * onx
                 side *= p.side_decay
+            # 실제 공: 쿠션 직후엔 게임 안내선 방향으로 나가다가 bend_dist 뒤 더 넓은 각도로 휜다
+            if p.bend_dist > 0:
+                if wall in ("L", "R"):
+                    fx, fy = vx, vy * p.bend_ratio / max(g, 1e-6)
+                else:
+                    fx, fy = vx * p.bend_ratio / max(g, 1e-6), vy
+                fn = math.hypot(fx, fy)
+                if fn > 1e-9:
+                    bend = (p.bend_dist * r, fx / fn, fy / fn)
         else:
             i = hit[2]
             bx, by = balls[i]

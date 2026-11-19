@@ -11,7 +11,7 @@ BOX = (0, 0, 1000, 500)
 
 
 def _after_top_cushion(tx):
-    t = trace_ball((500, 400), 270, 3.0, [], set(), BOX, 10, 1000, Params(), max_events=2, english=(tx, 0))
+    t = trace_ball((500, 400), 270, 3.0, [], set(), BOX, 10, 1000, Params(bend_dist=0), max_events=2, english=(tx, 0))
     a, b = t.points[1], t.points[2]
     return b[0] - a[0]
 
@@ -24,7 +24,7 @@ def test_right_english_kicks_right_off_cushion():
 
 
 def test_side_spin_fades_each_cushion():
-    t = trace_ball((500, 400), 270, 6.0, [], set(), BOX, 10, 1000, Params(), max_events=3, english=(1.0, 0))
+    t = trace_ball((500, 400), 270, 6.0, [], set(), BOX, 10, 1000, Params(bend_dist=0), max_events=3, english=(1.0, 0))
     p = t.points
     d1 = p[2][0] - p[1][0]
     d2 = p[3][0] - p[2][0]
@@ -33,21 +33,34 @@ def test_side_spin_fades_each_cushion():
 
 
 def _after_ball(ty):
-    t = trace_ball((100, 250), 0, 3.0, [(400, 265)], set(), BOX, 10, 1000, Params(), max_events=2, english=(0, ty))
+    t = trace_ball((100, 250), 0, 3.0, [(400, 265)], set(), BOX, 10, 1000, Params(top_k=0.6, bend_dist=0), max_events=2, english=(0, ty))
     e = t.events[0]
     nx, ny = t.points[e.idx + 1][0] - e.x, t.points[e.idx + 1][1] - e.y
     return math.degrees(math.atan2(ny, nx))
 
 
 def test_top_and_draw_after_ball_contact():
-    """밀어치기는 맞은 뒤 앞으로 더 가고, 끌어치기는 더 많이 꺾인다."""
+    """(모델 동작 확인) top_k를 주면 밀어치기는 앞으로 더, 끌어치기는 더 꺾인다. 실측 기본값은 top_k=0."""
     follow, center, draw = _after_ball(1.0), _after_ball(0.0), _after_ball(-1.0)
     assert abs(follow) < abs(center) < abs(draw)
 
 
 def test_no_curves_path_is_straight_between_events():
-    t = trace_ball((100, 100), 30, 4.0, [], set(), BOX, 10, 1000, Params(), max_events=4, english=(0.7, -0.7))
+    t = trace_ball((100, 100), 30, 4.0, [], set(), BOX, 10, 1000, Params(bend_dist=0), max_events=4, english=(0.7, -0.7))
     assert len(t.points) == len(t.events) + 2 or len(t.points) == len(t.events) + 1
+
+
+def test_cushion_bend_starts_on_guide_then_widens_like_real_ball():
+    """실제 영상: 쿠션 직후엔 안내선 방향, 공 반지름 4개 뒤 더 넓게휜다."""
+    p = Params()
+    t = trace_ball((300, 300), 30, 1.5, [], set(), BOX, 10, 1000, p, max_events=2)
+    c, k, f = t.points[1], t.points[2], t.points[3]
+    assert abs(math.hypot(k[0] - c[0], k[1] - c[1]) - p.bend_dist * 10) < 1e-6        # 4r 지점에서 꺾임
+    tin = math.tan(math.radians(60))                                                   # 아래 쿠션에 60° 입사
+    g = abs(k[0] - c[0]) / abs(k[1] - c[1]) / tin                                      # 직후: 안내선 비율
+    w = abs(f[0] - k[0]) / abs(f[1] - k[1]) / tin                                      # 휜 뒤
+    assert abs(g - p.reflect_ratio(math.cos(math.radians(60)), math.sin(math.radians(60)))) < 0.01
+    assert w > g
 
 
 def test_english_text():

@@ -16,7 +16,7 @@ DEFAULT = {
     "finish_targets": "reds", # 4구 마무리: reds=빨간 공 2개 / any2=상대 공 포함 아무 공 2개
     "top_n": 3,               # 보여줄 후보 수
     "monitor": 1,             # 모니터 번호 (1 = 주 모니터)
-    "use_spin": True,         # 무스핀으로 안 될 때만 스핀 샷도 찾기
+    "use_spin": False,        # 스핀 샷도 찾기 (실측상 효과가 거의 없어 기본 끔)
 }
 
 

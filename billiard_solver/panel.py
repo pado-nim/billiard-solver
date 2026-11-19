@@ -28,7 +28,7 @@ class Panel:
     def __init__(self, app):
         self.app = app
         w = self.win = tk.Toplevel(app.root)
-        w.title("당구 솔버 2.2")
+        w.title("당구 솔버 2.3")
         w.configure(bg=BG)
         w.attributes("-topmost", True)
         w.protocol("WM_DELETE_WINDOW", app.quit)
@@ -72,7 +72,7 @@ class Panel:
 
         top = tk.Frame(body, bg=BG)
         top.pack(fill="x")
-        label(top, "당구 솔버 2.2", 15, bold=True).pack(side="left")
+        label(top, "당구 솔버 2.3", 15, bold=True).pack(side="left")
         self.phase_lbl = label(top, "대기", 10, fg=ACC, bold=True)
         self.phase_lbl.pack(side="right")
         label(body, "무스핀 기본 · 안내선 기준", 9, fg=GOLD, bold=True).pack(anchor="w")

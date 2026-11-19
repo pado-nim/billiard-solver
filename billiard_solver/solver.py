@@ -195,6 +195,7 @@ class Solver:
                 q.cushion_e = min(1.0, base.cushion_e * (1 + rng.gauss(0, 0.03)))
                 q.cushion_f = min(1.05, q.cushion_e * (base.cushion_f / max(base.cushion_e, 1e-6)) * (1 + rng.gauss(0, 0.08)))  # f는 신뢰도 낮음
                 q.cushion_offset = base.cushion_offset + rng.gauss(0, 0.07)
+                q.bend_ratio = base.bend_ratio * math.exp(rng.gauss(0, 0.15))   # 실측 산포 1.0~1.65
                 ks = math.exp(rng.gauss(0, 0.2))
                 q.top_k, q.side_k = base.top_k * ks, base.side_k * ks
                 self.p = q
