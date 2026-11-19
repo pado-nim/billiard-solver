@@ -3,7 +3,7 @@
 단위: 길이 = 테이블 안쪽 긴 변(L) 길이, 시간 = 초.
 
 - 공은 직선으로 굴러가며 감속한다 (휘지 않음).
-- 쿠션: 법선 속도 cushion_e배, 접선 속도 cushion_f배로 반사한다.
+- 쿠션: 법선 속도 cushion_e배로 반사하고, 반사각은 게임 안내선처럼 입사각이 클수록 넓어진다 (reflect_ratio).
 - 공 충돌: 맞은 공은 중심선 방향으로 나가고, 수구는 접선 성분 + 밀림(follow)으로 나간다.
 - 당점(english=(좌우, 상하), 각각 -1~+1, 1/3 = 1팁):
     상하: 위(밀어치기)면 공에 맞은 뒤 앞으로 더 밀리고, 아래(끌어치기)면 뒤로 끌린다 (follow에 더해짐)
@@ -56,9 +56,19 @@ class Params:
     def speed_from_budget(self, d):
         return math.sqrt(2 * max(self.decel, 1e-6) * max(d, 0.0) + self.stop_speed ** 2)
 
-    def reflect_ratio(self):
-        """쿠션 반사 tan(반사각)/tan(입사각)."""
-        return min(max(self.cushion_f / max(self.cushion_e, 1e-6), 0.2), 1.8)
+    def reflect_ratio(self, vn, vt):
+        """쿠션 반사 tan(반사각)/tan(입사각). 게임 안내선처럼 비스듬히 들어갈수록 넓게 튄다.
+        45° 이하는 f/e, 그 위는 안내선 표의 비율만큼 늘어난다."""
+        ang = math.degrees(math.atan2(abs(vt), max(abs(vn), 1e-12)))
+        base = self.cushion_f / max(self.cushion_e, 1e-6)
+        tbl = _C("cushion_ratio_by_angle")
+        for (a0, r0), (a1, r1) in zip(tbl, tbl[1:]):
+            if ang <= a1:
+                r = r0 + (r1 - r0) * (ang - a0) / (a1 - a0)
+                break
+        else:
+            r = tbl[-1][1]
+        return min(max(base * r / tbl[0][1], 0.2), 1.8)
 
     def v0(self, power):
         return self.v0_max * (max(power, 0.0) / 100.0) ** self.power_exponent
@@ -150,7 +160,6 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
     R2 = 2 * r
     side = float(english[0])                  # 남아 있는 좌우 회전
     top = float(english[1])                   # 공에 처음 맞을 때 쓰이는 상하 회전
-    ratio = p.reflect_ratio()
 
     for _ in range(max_events):
         sp = math.hypot(vx, vy)
@@ -174,10 +183,11 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
             tr.events.append(Event("cushion", px, py, side=wall, idx=len(tr.points) - 1))
             onx, ony = {"L": (-1.0, 0.0), "R": (1.0, 0.0), "T": (0.0, -1.0), "B": (0.0, 1.0)}[wall]
             vn_in = abs(vx * onx + vy * ony)
-            q = ratio * p.cushion_e
             if wall in ("L", "R"):
+                q = p.reflect_ratio(vx, vy) * p.cushion_e
                 vx, vy = -vx * p.cushion_e, vy * q
             else:
+                q = p.reflect_ratio(vy, vx) * p.cushion_e
                 vx, vy = vx * q, -vy * p.cushion_e
             if abs(side) > 1e-6:
                 # 좌우 회전: 오른쪽 당점으로 위쪽 쿠션에 맞으면 오른쪽으로 튄다

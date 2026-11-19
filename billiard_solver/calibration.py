@@ -13,9 +13,11 @@ status:
 
 CAL = {
     "cushion_e": dict(value=0.70, status="맞춤", src="v2.0 값. 반사 방향은 f/e 비율로만 정해짐"),
-    "cushion_f": dict(value=0.60, status="안내선",
-                      src="반사 비율 f/e = 0.86. 게임 쿠션 안내선 읽기 0.80~0.9와 맞음. "
-                          "(영상 목적구 추적 1.26은 안내선과 크게 달라 쓰지 않음)"),
+    "cushion_f": dict(value=0.60, status="안내선", src="입사각 45° 이하에서 반사 비율 f/e = 0.86"),
+    # 게임 쿠션 안내선의 반사 비율 tan(반사)/tan(입사)를 입사각(쿠션 수직 기준, 도)별로.
+    # 영상(60fps)에서 흰 안내선이 보인 105개 장면(샷 약 50개)을 읽은 구간별 중앙값. 사이 값은 선형 보간
+    "cushion_ratio_by_angle": dict(value=((0, 0.85), (45, 0.85), (55, 0.93), (65, 1.00), (75, 1.025), (90, 1.03)),
+                                   status="안내선", src="영상 안내선 105개: 0~45° 0.85, 50~60° 0.93, 60~70° 1.00, 70~80° 1.02"),
     "cushion_offset": dict(value=0.18, status="안내선", src="조준선 링이 쿠션에 닿는 위치"),
     "decel": dict(value=1.0, status="맞춤", src="v2.0 값 (힘은 예상치)"),
     "v0_max": dict(value=4.2, status="맞춤", src="v2.0 값"),

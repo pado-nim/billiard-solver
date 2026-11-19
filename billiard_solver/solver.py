@@ -173,6 +173,7 @@ class Solver:
         return lo, hi
 
     MC_N = 32
+    MIN_ROBUST = 0.10      # 이보다 낮은 안정성은 '경로 없음'으로 본다
 
     def _mc_success(self, s, ang, pw, n=None):
         """실전 흉내: 조준·힘·당점 실수와 물리값 오차를 한꺼번에 무작위로 넣어 n번 쳐 본 득점률.
@@ -297,6 +298,7 @@ class Solver:
             self.english = (0.0, 0.0)
 
         picked = []
+        tiers = [[x for x in t if x.robust >= self.MIN_ROBUST] for t in tiers]   # 거의 안 들어가는 샷은 안 보여 줌
         for tier in tiers:                       # 앞 단계 샷을 먼저 채우고, 모자라면 다음 단계에서
             for sh in sorted(tier, key=lambda x: -x.score):
                 if len(picked) >= top_n:

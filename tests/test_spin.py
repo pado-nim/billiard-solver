@@ -127,3 +127,18 @@ def test_no_spin_is_default_and_cushion_first_is_last_resort():
         shots, _ = Solver(Params(), "4ball", "white").solve(det, 3)
         if shots and any(not x.first_cushion and x.english == (0.0, 0.0) for x in shots):
             assert shots[0].english == (0.0, 0.0) and not shots[0].first_cushion
+
+
+def test_cushion_reflection_widens_at_glancing_angles_like_game_guide():
+    """게임 안내선: 45° 이하 반사 비율 0.85, 비스듬할수록 넓어져 70° 이상에선 1.0 넘음."""
+    p = Params()
+    r = lambda deg: p.reflect_ratio(math.cos(math.radians(deg)), math.sin(math.radians(deg)))
+    assert abs(r(20) - 0.857) < 0.01 and abs(r(40) - 0.857) < 0.01
+    assert r(20) < r(55) < r(65) < r(75)
+    assert 0.98 < r(65) < 1.03 and r(75) > 1.0
+
+
+def test_weak_shots_are_not_recommended():
+    for seed in range(6):
+        shots, _ = Solver(Params(), "4ball_finish", "white").solve(_table(seed), 3)
+        assert all(sh.robust >= Solver.MIN_ROBUST for sh in shots)

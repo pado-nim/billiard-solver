@@ -405,9 +405,8 @@ def _params_from_guide(guide):
     if guide["kind"] == "ball" and guide.get("follow") is not None:
         p.follow = float(np.clip(guide["follow"], -1.0, 1.5))
         return p, "ball"
-    if guide["kind"] == "cushion" and guide.get("ratio"):
-        p.cushion_f = float(np.clip(guide["ratio"], 0.3, 1.8)) * p.cushion_e
-        return p, "cushion"
+    if guide["kind"] == "cushion":
+        return p, "cushion"          # 쿠션 반사는 안내선 표(입사각별)로 이미 맞춰져 있다
     return p, None
 
 
