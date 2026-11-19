@@ -77,7 +77,7 @@ def test_spin_shot_actually_scores_with_its_english():
         shots, s = sv.solve(det, 3)
         for sh in shots:
             t = trace_ball(s["pos"][s["cue"]], sh.angle, sv.p.v0(sh.power), s["pos"], {s["cue"]}, s["box"],
-                           s["r"], s["L"], sv.p, english=sh.english)
+                           s["r"], s["L"], sv.p, english=sh.english, roll_start=True)
             assert judge(t, "4ball_finish", s["targets"], s["forbidden"], s["need"])[0]
             assert 0.0 <= sh.robust <= 1.0
 
@@ -96,3 +96,25 @@ def test_stability_is_deterministic():
     a = Solver(Params(), "4ball", "white").solve(det, 3)[0]
     b = Solver(Params(), "4ball", "white").solve(det, 3)[0]
     assert [(x.angle, x.power, x.robust, x.english) for x in a] == [(x.angle, x.power, x.robust, x.english) for x in b]
+
+
+def test_tips_stay_inside_game_circle():
+    """게임 당점 화면의 초록 원(2팁) 밖은 칠 수 없으니 추천도 그 안에서만."""
+    from billiard_solver.solver import ENGLISH, MAX_TIP
+    assert all(math.hypot(*e) <= MAX_TIP + 1e-9 for e in ENGLISH)
+    for seed in range(4):
+        det = _table(seed)
+        shots, _ = Solver(Params(), "4ball_finish", "white").solve(det, 3)
+        assert all(math.hypot(*sh.english) <= MAX_TIP + 1e-9 for sh in shots)
+
+
+def test_prefers_ball_first_shots():
+    """첫 충돌이 쿠션인 샷은 덜 정확해서, 공 먼저 샷이 있으면 그걸 1순위로."""
+    n_ball_first = n = 0
+    for seed in range(8):
+        det = _table(seed)
+        shots, _ = Solver(Params(), "4ball", "white").solve(det, 1)
+        if shots:
+            n += 1
+            n_ball_first += not shots[0].first_cushion
+    assert n_ball_first >= n - 1

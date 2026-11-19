@@ -87,8 +87,9 @@ def build(det, shots, setup, mode, cue_color, show_all=True, selected=0, scale=1
 
     lines = [head]
     for rank, sh in enumerate(shots):
+        first = "  (쿠션 먼저: 덜 정확)" if getattr(sh, "first_cushion", False) else ""
         lines.append(f"#{rank + 1}  각도 {sh.angle:6.2f}°  힘 {sh.power:.0f}%  당점 {english_text(sh.english)}  "
-                     f"쿠션 {sh.cushions}  안정성 {sh.robust:.0%}")
+                     f"쿠션 {sh.cushions}  안정성 {sh.robust:.0%}{first}")
     for i, t in enumerate(lines):
         col = "#ffffff" if i == 0 else COLORS[(i - 1) % len(COLORS)]
         prims.append(("text", (x0 + 10, y0 - (30 + 26 * (len(lines) - 1 - i)) * k), t, col, 15 * k))
@@ -107,6 +108,7 @@ def build(det, shots, setup, mode, cue_color, show_all=True, selected=0, scale=1
 
 
 PREVIEW = "#ff4fd8"      # 내 조준 경로
+GOLD = "#ffd166"         # 추천 샷 목표 링
 FIX = "#39ff14"          # 조금 돌리면 득점되는 경로
 
 
@@ -158,8 +160,21 @@ def build_preview(det, pv, cue_color, scale=1.0):
         prims.append(("text", (mx + r * 0.4, my - r * 0.9), f"{p}%", "#ffffff", 12 * k))
 
     kor = KOR_MODE.get(pv["mode"], pv["mode"])
-    tag = {"ball": " · 맞은 뒤 방향: 게임 안내선", "cushion": " · 쿠션 반사: 게임 안내선"}.get(pv.get("matched"), "")
-    lines = [(f"[내 조준 · {kor}]  각도 {pv['angle']:.2f}°{tag}", "#ffffff")]
+    tg = pv.get("target")
+    if tg and tg.get("ghost"):                       # 추천 샷의 목표 링: 게임 링을 여기에 겹치면 된다
+        gx, gy = tg["ghost"]
+        gcol = FIX if tg["ok"] else GOLD
+        prims.append(("circle", (gx, gy), r, gcol, 4))
+        prims.append(("circle", (gx, gy), r * 0.15, gcol, 3))
+        prims.append(("text", (gx + r * 1.2, gy - r * 1.4), "목표" if not tg["ok"] else "✓ 일치", gcol, 14 * k))
+    lines = [(f"[내 조준 · {kor}]  각도 {pv['angle']:.2f}°", "#ffffff")]
+    if tg:
+        if tg["ok"]:
+            lines.append((f"✓ 추천 각도와 일치 (±0.05°) → 힘 {tg['power']:.0f}% · 당점 {english_text(tg['english'])}", FIX))
+        else:
+            way = "시계 방향" if tg["delta"] > 0 else "반시계 방향"
+            lines.append((f"추천 샷까지: {way}으로 {abs(tg['delta']):.2f}° 더 (게임 링을 금색 목표 원에 겹치기) · "
+                          f"힘 {tg['power']:.0f}% · 당점 {english_text(tg['english'])}", GOLD))
     verdict_col = FIX if pv["scored"] else "#ffb000"
     lines.append((f"이 방향: {pv['sequence']}  →  {pv['why']}", verdict_col))
     if pv["scored"]:

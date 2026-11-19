@@ -27,6 +27,7 @@ class Shot:
     pmax: float = 0.0
     robust: float = 1.0        # 물리값·조준·힘·당점을 조금씩 틀리게 해 봐도 득점하는 비율 (안정성)
     english: tuple = (0.0, 0.0)  # 당점 (좌우 +오른쪽, 상하 +위), 1/3 = 1팁
+    first_cushion: bool = False  # 첫 충돌이 쿠션인 샷 (부정확해서 순위를 크게 낮춤)
     length: float = 0.0        # 득점 순간까지 수구가 굴러간 거리 (테이블 긴 변 배수)
     rob_phys: float = 1.0      # 물리값이 틀려도 들어가는 비율
     rob_exec: float = 1.0      # 조준·힘·당점을 조금 틀려도 들어가는 비율
@@ -36,7 +37,18 @@ MODES = ("4ball", "4ball_finish", "3cushion")
 
 T = 1.0 / 3.0
 # 스핀 탐색에 쓰는 당점 (좌우, 상하). 1/3 = 1팁. 정중앙은 따로 먼저 탐색한다
-ENGLISH = [(x * T, y * T) for x in (-2, -1, 0, 1, 2) for y in (-2, -1, 0, 1, 2) if (x, y) != (0, 0)]
+MAX_TIP = 2 * T          # 게임 당점 화면의 초록 점선 원 = 공 반지름의 2/3 (2팁)까지만 칠 수 있다
+_D = 2 ** 0.5
+ENGLISH = [(x * T, y * T) for x in (-2, -1, 0, 1, 2) for y in (-2, -1, 0, 1, 2)
+           if (x, y) != (0, 0) and x * x + y * y <= 4] + [(sx * _D * T, sy * _D * T) for sx in (-1, 1) for sy in (-1, 1)]
+
+
+def clamp_tip(e):
+    """당점을 게임 당점 원 안으로."""
+    m = math.hypot(*e)
+    if m <= MAX_TIP:
+        return e
+    return (e[0] * MAX_TIP / m, e[1] * MAX_TIP / m)
 
 
 def _cushions_before(trace, targets, need):
@@ -128,7 +140,7 @@ class Solver:
 
     def simulate_speed(self, s, angle, speed):
         return trace_ball(s["pos"][s["cue"]], angle, speed, s["pos"], {s["cue"]},
-                          s["box"], s["r"], s["L"], self.p, english=self.english)
+                          s["box"], s["r"], s["L"], self.p, english=self.english, roll_start=True)
 
     def _ok(self, s, ang, pw):
         return judge(self.simulate(s, ang, pw), self.mode, s["targets"], s["forbidden"], s["need"])[0]
@@ -241,18 +253,19 @@ class Solver:
         try:
             for _ in range(n):
                 q = Params.from_dict(base.to_dict())
-                q.follow = base.follow + rng.gauss(0, 0.1)
+                q.follow = base.follow + rng.gauss(0, 0.15)
                 k = math.exp(rng.gauss(0, 0.18))
                 q.decel, q.damping = base.decel * k, base.damping * k
                 q.cushion_e = min(1.0, base.cushion_e * (1 + rng.gauss(0, 0.03)))
-                q.cushion_f = min(1.05, q.cushion_e * (base.cushion_f / max(base.cushion_e, 1e-6)) * (1 + rng.gauss(0, 0.02)))
+                q.cushion_f = min(1.05, q.cushion_e * (base.cushion_f / max(base.cushion_e, 1e-6)) * (1 + rng.gauss(0, 0.08)))  # f는 신뢰도 낮음
+                q.roll_factor = min(1.0, base.roll_factor * (1 + rng.gauss(0, 0.06)))
+                q.obj_transfer = base.obj_transfer * (1 + rng.gauss(0, 0.15))
                 q.cushion_offset = base.cushion_offset + rng.gauss(0, 0.07)
                 ks = math.exp(rng.gauss(0, 0.2))
                 q.top_k, q.side_k = base.top_k * ks, base.side_k * ks
                 self.p = q
                 if ex or ey:
-                    self.english = (max(-1.0, min(1.0, ex + rng.gauss(0, 0.08))),
-                                    max(-1.0, min(1.0, ey + rng.gauss(0, 0.08))))
+                    self.english = clamp_tip((ex + rng.gauss(0, 0.08), ey + rng.gauss(0, 0.08)))
                 ok += self._ok(s, ang + rng.gauss(0, 0.12), max(5.0, pw * (1 + rng.gauss(0, 0.07))))
         finally:
             self.p, self.english = keep_p, keep_e
@@ -300,15 +313,26 @@ class Solver:
         rob = self._mc_success(s, ang, pw)
         rp = rx = rob
         tip = math.hypot(*self.english) * 3            # 몇 팁인지
+        # 첫 충돌이 쿠션이면 그 뒤 각도를 정확히 알 수 없다 (게임 물리를 완벽히 모름).
+        # 공을 먼저 맞히면 게임이 링·안내선으로 첫 구간을 보여 줘서 정확하다 → 공 먼저 샷을 크게 우대
+        first_cushion = bool(tr.events) and tr.events[0].kind == "cushion"
+        # 수구에서 첫 공까지 거리가 멀수록 조준 실수가 커진다
+        first_len = 0.0
+        if tr.events:
+            e0 = tr.events[0]
+            c0 = s["pos"][s["cue"]]
+            first_len = math.hypot(e0.x - c0[0], e0.y - c0[1]) / s["L"]
         # 실전 득점률(안정성)을 가장 크게 보고, 짧은 경로·적은 쿠션·정중앙에 가까운 당점을 우대
         score = ((0.05 + rob) ** 2 * (1 + 0.02 * prange)
-                 / (1 + 0.5 * length) / (1 + 0.15 * extra) / (1 + 0.05 * tip))
+                 / (1 + 0.8 * length) / (1 + 0.15 * extra) / (1 + 0.05 * tip)
+                 / (1 + 0.6 * first_len) * (0.2 if first_cushion else 1.0))
         sh = Shot(ang, pw, win, int(prange // 5), score, tr, cush)
         sh.pmin, sh.pmax = lo, hi
         sh.robust, sh.rob_phys, sh.rob_exec = rob, rp, rx
         sh.score_index = k
         sh.english = self.english
         sh.length = length
+        sh.first_cushion = first_cushion
         return sh
 
     def solve(self, det, top_n=3):

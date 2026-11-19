@@ -20,27 +20,34 @@ from dataclasses import dataclass, field, fields
 EPS = 1e-9
 
 
+from .calibration import value as _C
+
+
 @dataclass
 class Params:
-    decel: float = 1.0              # 등감속 성분 (L/s^2)
-    damping: float = 0.0            # 속도 비례 감쇠 (1/s)
-    v0_max: float = 4.2             # 힘 100%의 초기 속도 (L/s)
-    power_exponent: float = 1.0     # 초기속도 ∝ (힘%)^지수
-    cushion_e: float = 0.70         # 쿠션 법선 속도 반발계수
-    cushion_f: float = 0.60         # 쿠션 접선 속도 유지율 (게임 조준선 실측 반사비 0.80 × e)
-    ball_loss: float = 0.97         # 공 충돌 추가 손실 (속도 배율)
+    # ↓ 기본값은 calibration.py 표에서 온다 (출처·신뢰도·미확정 표시 포함, v2.1)
+    decel: float = _C("decel")             # 등감속 성분 (L/s^2)          실측 맞춤: 감속 ≈ 0.05 + 0.1×속도
+    damping: float = _C("damping")           # 속도 비례 감쇠 (1/s)
+    v0_max: float = _C("v0_max")             # 힘 100%의 초기 속도 (L/s)    실측: 100%로 친 샷 ≈ 1.8~2.4
+    power_exponent: float = _C("power_exponent")     # 초기속도 ∝ (힘%)^지수
+    roll_factor: float = _C("roll_factor")       # 친 직후 미끄러지다 구르기 시작할 때 남는 속도 비율 (실측 맞춤 0.70, 이론 5/7)
+    cushion_e: float = _C("cushion_e")         # 쿠션 법선 속도 반발계수     실측 중앙값 0.61
+    cushion_f: float = _C("cushion_f")         # 쿠션 접선 속도 유지율        실측 0.71~0.74 → 구르는 공은 반사각이 넓어짐
+    ball_loss: float = _C("ball_loss")         # 공 충돌 뒤 수구 속도 배율
+    obj_transfer: float = _C("obj_transfer")       # 맞은 공이 받는 속도 (법선 속도 대비)   실측 0.33~0.67
     slide_decel: float = 0.70       # 미끄럼 마찰 가속도 (L/s^2). 클수록 금방 휘고 짧게 휨
-    spin_k: float = 0.0             # 회전 비율 (속이 꽉 찬 공 = 2/7). 0이면 휘지 않음
+    spin_k: float = _C("spin_k")             # 회전 비율 (속이 꽉 찬 공 = 2/7). 0이면 휘지 않음
     cushion_spin: float = 1.0       # 쿠션에 맞을 때 회전의 법선 성분이 남는 비율 (1=그대로, 0=없어짐)
     start_spin: float = 0.0         # 칠 때 게임이 주는 앞뒤 회전 (0=정중앙, 1=바로 구름, >1 밀어치기, <0 끌어치기)
     cushion_ratio_slope: float = 0.0  # 입사각에 따라 반사 비율이 바뀌는 정도 (조준선에서 학습). 비율 = f/e + 기울기×(입사각/45-1)
-    follow: float = 0.15            # 공에 맞은 뒤 수구가 앞으로 밀리는 정도 (0=90도 법칙, 실측으로 학습)
+    follow: float = _C("follow")            # 공에 맞은 뒤 수구가 앞으로 밀리는 정도 (0=90도 법칙). 실측 0.53~0.74
+                                    # (게임 안내선은 0 = 접선으로 그리지만 실제 공은 훨씬 앞으로 간다)
     follow_n: float = 0.0           # 위 값을 잰 샘플 수 (적으면 추천할 때 불확실성을 크게 잡음)
-    cushion_offset: float = 0.18    # 실제 쿠션 충돌선이 인식한 쿠션선보다 안쪽으로 들어온 정도 (공 반지름 단위, 조준선에서 학습)
+    cushion_offset: float = _C("cushion_offset")    # 실제 쿠션 충돌선이 인식한 쿠션선보다 안쪽으로 들어온 정도 (공 반지름 단위). 실측 ≈ 1px
     stop_speed: float = 0.005       # 이 속도(L/s) 아래면 정지
-    top_k: float = 0.6              # 상하 당점 1(3팁)일 때 follow에 더해지는 양
-    side_k: float = 0.22            # 좌우 당점 1(3팁)일 때 쿠션에서 옆으로 밀리는 속도 (법선 속도 대비)
-    side_decay: float = 0.6         # 쿠션 한 번 맞을 때마다 남는 좌우 회전 비율
+    top_k: float = _C("top_k")              # 상하 당점 1(3팁)일 때 follow에 더해지는 양
+    side_k: float = _C("side_k")            # 좌우 당점 1(3팁)일 때 쿠션에서 옆으로 밀리는 속도 (법선 속도 대비)
+    side_decay: float = _C("side_decay")         # 쿠션 한 번 맞을 때마다 남는 좌우 회전 비율
 
     @classmethod
     def from_dict(cls, d):
@@ -157,7 +164,7 @@ def _hit_along(px, py, dx, dy, length, box, balls, gone, R2):
 
 
 def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Params,
-               max_events=30, follow_objects=True, spin=(0.0, 0.0), english=(0.0, 0.0)):
+               max_events=30, follow_objects=True, spin=(0.0, 0.0), english=(0.0, 0.0), roll_start=False):
     """start에서 angle 방향(화면 좌표, 0도=오른쪽, 90도=아래)으로 초기속도 speed(L/s)로 친다.
 
     balls: [(x,y), ...] 픽셀   skip: 경로에서 제외할 공 인덱스(수구 자신 포함)
@@ -172,6 +179,7 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
         box = (box[0] + o, box[1] + o, box[2] - o, box[3] - o)
     px, py = start
     a = math.radians(angle_deg)
+    speed = speed * (p.roll_factor if roll_start else 1.0)  # 친 직후 미끄러짐으로 줄어든 구르는 속도
     vx, vy = speed * math.cos(a), speed * math.sin(a)       # L/s
     wx, wy = spin
     if spin == (0.0, 0.0) and p.start_spin:
@@ -273,7 +281,7 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
             tr.events.append(Event("ball", px, py, target=i, idx=len(tr.points) - 1))
             gone.add(i)
             if follow_objects:
-                ov = abs(vn) * p.ball_loss
+                ov = abs(vn) * p.obj_transfer
                 oang = math.degrees(math.atan2(ny, nx))
                 others = [j for j in range(len(balls)) if j != i]
                 sub = trace_ball((bx, by), oang, ov, balls, set(others), box, r,

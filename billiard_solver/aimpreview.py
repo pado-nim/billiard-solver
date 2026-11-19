@@ -54,6 +54,49 @@ def _ring_score(mask, c, rr):
 
 
 def read_aim(img, det, cue_color):
+    """수구에서 나가는 흰 선 후보(히스토그램 봉우리 상위 2개) 중 끝에 고스트볼 링이 있는 쪽을 조준선으로 고른다.
+    (큐대·아바타가 선처럼 보이면 반대 방향을 조준으로 잘못 읽을 수 있어서. 실제 영상 13샷 중 2번 그랬음)"""
+    cue = next((b for b in det.balls if b["color"] == cue_color), None)
+    if cue is None:
+        return None
+    peaks = _direction_peaks(img, det, cue)
+    best = None
+    for a0 in peaks:
+        got = _read_aim_one(img, det, cue_color, a0)
+        if got is None:
+            continue
+        key = (got["ring"] is not None, got.get("ring_score", 0.0))
+        if best is None or key > best[0]:
+            best = (key, got)
+    return best[1] if best else None
+
+
+def _direction_peaks(img, det, cue):
+    r = det.radius
+    mask = _thin_white_mask(img, det)
+    ys, xs = np.nonzero(mask)
+    if len(xs) < 50:
+        return []
+    rel = np.stack([xs, ys], 1).astype(float) - np.array([cue["x"], cue["y"]])
+    dist = np.hypot(rel[:, 0], rel[:, 1])
+    near = (dist > r * 1.1) & (dist < r * 4.0)
+    if near.sum() < 10:
+        return []
+    ang = np.degrees(np.arctan2(rel[near, 1], rel[near, 0])) % 360
+    hist, edges = np.histogram(ang, bins=360, range=(0, 360))
+    sm = np.convolve(np.r_[hist[-2:], hist, hist[:2]], np.ones(5), "valid")
+    out = []
+    for _ in range(2):
+        i = int(np.argmax(sm))
+        if sm[i] < 6:
+            break
+        out.append(math.radians(edges[i] + 0.5))
+        for j in range(i - 20, i + 21):
+            sm[j % 360] = 0
+    return out
+
+
+def _read_aim_one(img, det, cue_color, force_a0):
     """지금 게임 조준 방향. 반환: {"angle": 도, "ring": (x,y) 또는 None} / 못 읽으면 None.
 
     각도는 화면 좌표 기준 (0도=오른쪽, 90도=아래, 커지면 시계 방향).
@@ -79,7 +122,7 @@ def read_aim(img, det, cue_color):
     ang = np.degrees(np.arctan2(rel[near, 1], rel[near, 0])) % 360
     hist, edges = np.histogram(ang, bins=360, range=(0, 360))
     hist = np.convolve(np.r_[hist[-2:], hist, hist[:2]], np.ones(5), "valid")
-    a0 = math.radians(edges[int(np.argmax(hist))] + 0.5)
+    a0 = force_a0
     d0 = np.array([math.cos(a0), math.sin(a0)])
 
     # 2) 그 방향 띠 안의 픽셀로 직선 맞춤 (수구 중심을 지나야 함), 선이 끊긴 곳까지만
@@ -112,6 +155,7 @@ def read_aim(img, det, cue_color):
             if sc > best[0]:
                 best = (sc, c, rr)
     ring = None
+    ring_score = float(best[0])
     if best[0] >= 0.45:
         c0, rr0 = best[1], best[2]
         rel_r = pts - c0
@@ -158,7 +202,7 @@ def read_aim(img, det, cue_color):
             angle = math.degrees(math.atan2(w * math.sin(math.radians(ra)) + (1 - w) * math.sin(math.radians(angle)),
                                             w * math.cos(math.radians(ra)) + (1 - w) * math.cos(math.radians(angle)))) % 360
     guide = _read_guide(pts, ring, d, det, cue) if ring is not None else None
-    return {"angle": angle, "ring": ring, "guide": guide}
+    return {"angle": angle, "ring": ring, "guide": guide, "ring_score": ring_score}
 
 
 def _read_guide(pts, ring, d_in, det, cue):
@@ -372,7 +416,7 @@ def _geo(sv, s, angle):
     q = Params.from_dict(sv.p.to_dict())
     q.decel, q.damping = 1e-6, 0.0
     return trace_ball(s["pos"][s["cue"]], angle, q.v0(100), s["pos"], {s["cue"]}, s["box"], s["r"], s["L"], q,
-                      max_events=GEO_EVENTS)
+                      max_events=GEO_EVENTS, english=sv.english)
 
 
 def _geo_with_guide(sv, s, angle, guide):
@@ -414,19 +458,26 @@ def _geo_ok(sv, s, angle, mode):
     return k is not None and judge(cut, mode, s["targets"], s["forbidden"], s["need"])[0], tr
 
 
-def analyze(det, aim, cfg):
-    """조준 각도로 친 결과. 반환 dict (오류면 {"error": 이유})."""
+def analyze(det, aim, cfg, target=None):
+    """조준 각도로 친 결과. 반환 dict (오류면 {"error": 이유}).
+
+    target: F2 추천 샷(Shot). 있으면 그 당점으로 계산하고, 지금 조준이 추천 각도에서 얼마나 벗어났는지도 알려 준다.
+    게임 안내선(링에서 나가는 선)은 단순 미리보기라 실제와 다르다 (실측: 공에 맞은 뒤 실제로는 훨씬 앞으로 가고,
+    쿠션에선 더 넓게 튄다). 그래서 맞은 뒤 경로는 실측 물리로 그린다.
+    """
     sv = config.make_solver(cfg)
     s = sv.setup(det)
     if s is None:
         return {"error": sv.fail_reason or "setup"}
-    sv.p, matched = _params_from_guide(aim.get("guide"))
+    matched = None
+    if target is not None:
+        sv.english = tuple(target.english)
     mode = cfg["mode"]
     names = ball_names(det)
     angle = aim["angle"]
 
-    # 1) 방향 기준 경로 (거리 무제한), 공에 맞은 뒤는 게임 안내선 방향 그대로
-    geo = _geo_with_guide(sv, s, angle, aim.get("guide"))
+    # 1) 방향 기준 경로 (거리 무제한), 실측 물리
+    geo = _geo(sv, s, angle)
     cut, k = _cut_at_score(geo, s)
     scored = k is not None and judge(cut, mode, s["targets"], s["forbidden"], s["need"])[0]
     judged = cut if k is not None else geo
@@ -466,7 +517,14 @@ def analyze(det, aim, cfg):
         ring_gap = math.hypot(first.x - aim["ring"][0], first.y - aim["ring"][1]) / s["r"]
 
     seq_tr = cut if k is not None else Trace(points=geo.points, events=geo.events[:6])
-    return {"angle": angle, "geo": geo, "score_k": k, "scored": scored, "why": why,
+    # 추천 샷과 비교 (링 겹치기 조준 도우미)
+    tgt = None
+    if target is not None:
+        delta = (target.angle - angle + 180) % 360 - 180          # +면 시계 방향으로 더 돌려야 함
+        e0 = next((e for e in target.trace.events), None)
+        tgt = {"delta": delta, "angle": target.angle, "power": target.power, "english": tuple(target.english),
+               "ghost": (e0.x, e0.y) if e0 is not None else None, "ok": abs(delta) <= 0.05}
+    return {"angle": angle, "geo": geo, "score_k": k, "scored": scored, "why": why, "target": tgt,
             "sequence": _sequence(seq_tr, names), "ok_powers": ok_powers, "runs": _runs(set(ok_powers)),
             "min_power": ok_powers[0] if ok_powers else None, "marks": marks, "fix": fix, "setup": s,
             "mode": mode, "ring": aim.get("ring"), "ring_gap": ring_gap, "matched": matched,

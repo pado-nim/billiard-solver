@@ -75,6 +75,8 @@ class App:
         self.busy = False
         self.last = None              # (det, shots, setup)   F2 분석 결과
         self.preview = None           # (det, 결과)            F5 내 조준 시뮬레이션 결과
+        self.solution = None          # 마지막 F2 결과 (F5에서 추천 샷과 비교하는 데 씀)
+        self._pending_solve = False
         self.live = False             # 실시간 따라가기 (조준을 움직이면 계속 다시 계산)
         self._live_det = None         # 실시간 모드에선 공 위치를 잠깐 재사용 (조준선만 다시 읽음)
         self._live_det_t = 0.0
@@ -132,6 +134,7 @@ class App:
         if kind == "solved":
             det, shots, setup, reason = item[1]
             self.last = (det, shots, setup) if det is not None else None
+            self.solution = self.last if shots else None
             self.selected = 0
             kor = render.KOR_MODE.get(self.cfg["mode"], self.cfg["mode"])
             if det is None:
@@ -158,6 +161,11 @@ class App:
             elif not (self.live and self.preview is not None):    # 실시간 중엔 한 번 못 읽어도 이전 것 유지
                 self.preview = None
                 self.msg = err
+            if self._pending_solve:
+                self._pending_solve = False
+                self.redraw()
+                self.solve()
+                return
             if self.live:
                 self.root.after(250, self._live_next)
         elif kind == "error":
@@ -165,6 +173,12 @@ class App:
         self.redraw()
 
     def _preview_msg(self, pv):
+        tg = pv.get("target")
+        if tg:
+            if tg["ok"]:
+                return f"✓ 추천 각도와 일치 → 힘 {tg['power']:.0f}% · 당점 {render.english_text(tg['english'])}로 치세요"
+            way = "시계" if tg["delta"] > 0 else "반시계"
+            return f"추천 샷까지 {way} 방향으로 {abs(tg['delta']):.2f}° 더 (금색 목표 원에 게임 링을 겹치기)"
         if pv["scored"]:
             need = f", 필요한 힘 {pv['min_power']}% 이상(예상)" if pv["min_power"] else ", 세게 치세요"
             return f"내 조준 {pv['angle']:.2f}°: 득점 경로{need}"
@@ -206,6 +220,9 @@ class App:
         self.live = False
         if not self.busy:
             self.solve()
+        else:
+            self._pending_solve = True       # 실시간 계산이 끝나는 대로 분석 (눌렀는데 무시되지 않게)
+            self.msg = "분석 준비 중..."
 
     def clear(self):
         self.live = False
@@ -213,6 +230,7 @@ class App:
             return
         self.last = None
         self.preview = None
+        self.solution = None
         self.msg = "F2: 분석  ·  F5: 내 조준 시뮬레이션"
         self.redraw()
 
@@ -227,6 +245,10 @@ class App:
         img = self.grab()
         cfg = dict(self.cfg)
         reuse = self._live_det if (self.live and time.time() - self._live_det_t < 2.0) else None
+        target = None
+        if self.solution is not None and self.solution[1]:
+            shots = self.solution[1]
+            target = shots[self.selected % len(shots)]
 
         def work():
             try:
@@ -241,7 +263,7 @@ class App:
                     self.results.put(("preview", (det, None,
                                                   "조준선이 안 보여요. 게임에서 조준 중일 때(흰 조준선이 보일 때) F5")))
                     return
-                pv = aimpreview.analyze(det, aim, cfg)
+                pv = aimpreview.analyze(det, aim, cfg, target=target)
                 if "error" in pv:
                     kor = render.KOR_MODE.get(cfg["mode"], cfg["mode"])
                     why = {"need_2_reds": f"{kor} 모드인데 빨간 공이 2개가 아니에요 (모드 확인)",
