@@ -145,7 +145,8 @@ class App:
                 self.msg = f"{kor} 모드: 공이 {len(det.balls)}개만 보여요 (공이 가려졌는지 확인)"
             elif shots:
                 sh = shots[0]
-                self.msg = f"[{kor}] 1순위: 각도 {sh.angle:.2f}° · 힘 {sh.power:.0f}% · 안정성 {sh.robust:.0%}"
+                self.msg = (f"[{kor}] 1순위: 각도 {sh.angle:.2f}° · 힘 {sh.power:.0f}% · "
+                            f"당점 {render.english_text(sh.english)} · 안정성 {sh.robust:.0%}")
             else:
                 self.msg = f"[{kor}] 득점 경로를 못 찾았어요"
         elif kind == "preview":
@@ -302,6 +303,16 @@ class App:
         self.msg = f"내 공: {name}. F2: 분석"
         self.redraw()
 
+    def toggle_spin(self):
+        on = not self.cfg.get("use_spin", True)
+        self._set_cfg("use_spin", on)
+        if self.last is not None and not self.busy and not self.live:
+            self.msg = f"스핀 {'켬' if on else '끔'} → 다시 분석"
+            self.solve()
+            return
+        self.msg = f"스핀 {'켬: 당점까지 추천' if on else '끔: 정중앙만'}"
+        self.redraw()
+
     def next_candidate(self):
         self.selected += 1
         self.redraw()
@@ -397,6 +408,9 @@ class App:
         elif p[0] == "circle":
             _, (x, y), r, col, w = p
             c.create_oval(x - r, y - r, x + r, y + r, outline=col, width=max(1, int(w * self.scale)))
+        elif p[0] == "dot":
+            _, (x, y), r, col = p
+            c.create_oval(x - r, y - r, x + r, y + r, fill=col, outline="")
         elif p[0] == "text":
             _, (x, y), t, col, size = p
             self._text(x, y, t, col, size)

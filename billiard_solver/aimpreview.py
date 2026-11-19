@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from . import config
-from .physics import Params, Trace, trace_ball
+from .physics import Event, Params, Trace, trace_ball
 from .solver import _score_event_index, judge
 
 POWERS = list(range(30, 101, 5))
@@ -375,6 +375,29 @@ def _geo(sv, s, angle):
                       max_events=GEO_EVENTS)
 
 
+def _geo_with_guide(sv, s, angle, guide):
+    """첫 충돌이 공이고 게임 안내선(맞은 뒤 수구 방향)이 보이면, 그 뒤 첫 구간은 안내선 방향 그대로 잇는다.
+    (얇게 맞는 샷은 공 위치가 0.5픽셀만 달라도 꺾이는 방향이 크게 바뀌어서, 게임이 그려 준 방향이 가장 정확하다)"""
+    geo = _geo(sv, s, angle)
+    if not guide or guide.get("kind") != "ball" or guide.get("cue_dir") is None or not geo.events:
+        return geo
+    e0 = geo.events[0]
+    if e0.kind != "ball" or e0.target != guide.get("target"):
+        return geo
+    q = Params.from_dict(sv.p.to_dict())
+    q.decel, q.damping = 1e-6, 0.0
+    u = guide["cue_dir"]
+    ang2 = math.degrees(math.atan2(float(u[1]), float(u[0])))
+    rest = trace_ball((e0.x, e0.y), ang2, q.v0(100), s["pos"], {s["cue"], e0.target}, s["box"], s["r"], s["L"], q,
+                      max_events=GEO_EVENTS - 1)
+    base = e0.idx
+    pts = geo.points[:base + 1] + rest.points[1:]
+    evs = [e0] + [Event(e.kind, e.x, e.y, side=e.side, target=e.target, idx=e.idx + base) for e in rest.events]
+    objs = {e0.target: geo.object_paths.get(e0.target, [])}
+    objs.update(rest.object_paths)
+    return Trace(points=pts, events=evs, object_paths=objs)
+
+
 def _cut_at_score(tr, s):
     """득점 순간까지만 남긴 경로 (그 뒤에 다른 공을 맞는 건 판정에서 뺀다)."""
     k = _score_event_index(tr, s["targets"], s["need"])
@@ -402,9 +425,10 @@ def analyze(det, aim, cfg):
     names = ball_names(det)
     angle = aim["angle"]
 
-    # 1) 방향 기준 경로 (거리 무제한)
-    scored, geo = _geo_ok(sv, s, angle, mode)
+    # 1) 방향 기준 경로 (거리 무제한), 공에 맞은 뒤는 게임 안내선 방향 그대로
+    geo = _geo_with_guide(sv, s, angle, aim.get("guide"))
     cut, k = _cut_at_score(geo, s)
+    scored = k is not None and judge(cut, mode, s["targets"], s["forbidden"], s["need"])[0]
     judged = cut if k is not None else geo
     if scored:
         why = "득점 경로!"

@@ -4,9 +4,46 @@ primitive:
   ('line',   [(x,y),...], color, width, dashed)
   ('circle', (x,y), r, color, width)
   ('text',   (x,y), str, color, size)
+  ('dot',    (x,y), r, color)                    채운 원
 """
+import math
+
 COLORS = ["#39ff14", "#ffb000", "#00e5ff"]   # 1순위, 2순위, 3순위
 KOR_MODE = {"4ball": "4구", "4ball_finish": "4구 마무리(3쿠션)", "3cushion": "3구(3쿠션)"}
+
+
+def english_text(e):
+    """당점을 사람 말로: '정중앙' / '12시 2팁 (밀어치기)' / '3시 1팁 (오른쪽)'"""
+    tx, ty = e
+    tips = int(round(math.hypot(tx, ty) * 3))
+    if tips == 0:
+        return "정중앙"
+    deg = math.degrees(math.atan2(tx, ty)) % 360           # 12시에서 시계 방향
+    clock = int(round(deg / 30)) % 12 or 12
+    parts = []
+    if ty > 0.15:
+        parts.append("밀어치기")
+    elif ty < -0.15:
+        parts.append("끌어치기")
+    if tx > 0.15:
+        parts.append("오른쪽")
+    elif tx < -0.15:
+        parts.append("왼쪽")
+    return f"{clock}시 {tips}팁 ({' '.join(parts)})"
+
+
+def cue_diagram(cx, cy, R, e, col):
+    """게임 당점 고르는 공처럼 생긴 작은 그림: 공 테두리, 1·2팁 원, 십자, 당점 점."""
+    out = [("dot", (cx, cy), R, "#f2f2f2"),
+           ("circle", (cx, cy), R, "#202020", 2),
+           ("circle", (cx, cy), R * 2 / 3, "#b0b0b0", 1),
+           ("circle", (cx, cy), R / 3, "#b0b0b0", 1),
+           ("line", [(cx - R, cy), (cx + R, cy)], "#b0b0b0", 1, False),
+           ("line", [(cx, cy - R), (cx, cy + R)], "#b0b0b0", 1, False)]
+    tx, ty = e
+    out.append(("dot", (cx + tx * R, cy - ty * R), max(3, R * 0.16), "#e00000"))
+    out.append(("circle", (cx + tx * R, cy - ty * R), max(3, R * 0.16), col, 2))
+    return out
 
 
 def build(det, shots, setup, mode, cue_color, show_all=True, selected=0, scale=1.0):
@@ -50,8 +87,8 @@ def build(det, shots, setup, mode, cue_color, show_all=True, selected=0, scale=1
 
     lines = [head]
     for rank, sh in enumerate(shots):
-        lines.append(f"#{rank + 1}  각도 {sh.angle:6.2f}°  힘 {sh.power:.0f}% ({sh.pmin:.0f}~{sh.pmax:.0f} OK)  "
-                     f"여유 ±{sh.window / 2:.2f}°  쿠션 {sh.cushions}  안정성 {sh.robust:.0%}")
+        lines.append(f"#{rank + 1}  각도 {sh.angle:6.2f}°  힘 {sh.power:.0f}%  당점 {english_text(sh.english)}  "
+                     f"쿠션 {sh.cushions}  안정성 {sh.robust:.0%}")
     for i, t in enumerate(lines):
         col = "#ffffff" if i == 0 else COLORS[(i - 1) % len(COLORS)]
         prims.append(("text", (x0 + 10, y0 - (30 + 26 * (len(lines) - 1 - i)) * k), t, col, 15 * k))
@@ -59,8 +96,13 @@ def build(det, shots, setup, mode, cue_color, show_all=True, selected=0, scale=1
     # 수구 옆에 1순위 힘 표시
     cue = setup["pos"][setup["cue"]]
     sel = shots[selected % len(shots)]
+    scol = COLORS[selected % len(shots) % len(COLORS)]
     prims.append(("text", (cue[0] + r + 8 * k, cue[1] - r - 30 * k),
-                  f"힘 {sel.power:.0f}%  ({sel.pmin:.0f}~{sel.pmax:.0f})", COLORS[selected % len(shots) % len(COLORS)], 18 * k))
+                  f"힘 {sel.power:.0f}%  ·  {english_text(sel.english)}", scol, 18 * k))
+    # 수구 옆 당점 그림
+    R = 26 * k
+    dx = cue[0] - r - 12 * k - R if cue[0] + r + 300 * k > x1 else cue[0] - r - 12 * k - R
+    prims += cue_diagram(dx, cue[1], R, sel.english, scol)
     return prims
 
 

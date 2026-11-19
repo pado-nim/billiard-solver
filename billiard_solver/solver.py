@@ -8,6 +8,7 @@ mode:
 """
 from dataclasses import dataclass
 import math
+import random
 
 from .physics import Params, trace_ball
 
@@ -24,10 +25,18 @@ class Shot:
     score_index: int = -1
     pmin: float = 0.0          # 이 각도로 득점되는 힘 범위 (5% 단위)
     pmax: float = 0.0
-    robust: float = 1.0        # 물리값을 조금씩 틀리게 바꿔봐도 득점하는 비율 (안정성)
+    robust: float = 1.0        # 물리값·조준·힘·당점을 조금씩 틀리게 해 봐도 득점하는 비율 (안정성)
+    english: tuple = (0.0, 0.0)  # 당점 (좌우 +오른쪽, 상하 +위), 1/3 = 1팁
+    length: float = 0.0        # 득점 순간까지 수구가 굴러간 거리 (테이블 긴 변 배수)
+    rob_phys: float = 1.0      # 물리값이 틀려도 들어가는 비율
+    rob_exec: float = 1.0      # 조준·힘·당점을 조금 틀려도 들어가는 비율
 
 
 MODES = ("4ball", "4ball_finish", "3cushion")
+
+T = 1.0 / 3.0
+# 스핀 탐색에 쓰는 당점 (좌우, 상하). 1/3 = 1팁. 정중앙은 따로 먼저 탐색한다
+ENGLISH = [(x * T, y * T) for x in (-2, -1, 0, 1, 2) for y in (-2, -1, 0, 1, 2) if (x, y) != (0, 0)]
 
 
 def _cushions_before(trace, targets, need):
@@ -60,7 +69,7 @@ def judge(trace, mode, targets, forbidden, need=None):
 class Solver:
     def __init__(self, params: Params = None, mode="4ball", cue_color="white",
                  angle_step=0.25, powers=(30, 40, 50, 60, 70, 80, 90, 100), finish_targets="reds",
-                 power_pick=0.65):
+                 power_pick=0.65, use_spin=True):
         self.p = params or Params()
         self.finish_targets = finish_targets
         self.power_pick = power_pick      # 득점 힘 범위 중 어디를 추천할지 (0=최소, 0.5=가운데, 1=최대)
@@ -68,6 +77,8 @@ class Solver:
         self.cue_color = cue_color
         self.angle_step = angle_step
         self.powers = powers
+        self.use_spin = use_spin
+        self.english = (0.0, 0.0)         # simulate가 쓰는 현재 당점
 
     def setup(self, det):
         """검출 결과에서 수구, 목적구, 금지구 인덱스를 정한다."""
@@ -117,7 +128,7 @@ class Solver:
 
     def simulate_speed(self, s, angle, speed):
         return trace_ball(s["pos"][s["cue"]], angle, speed, s["pos"], {s["cue"]},
-                          s["box"], s["r"], s["L"], self.p)
+                          s["box"], s["r"], s["L"], self.p, english=self.english)
 
     def _ok(self, s, ang, pw):
         return judge(self.simulate(s, ang, pw), self.mode, s["targets"], s["forbidden"], s["need"])[0]
@@ -176,10 +187,13 @@ class Solver:
             out.append(mk(follow=base["follow"] + d))
         for d in (-0.1, 0.1):
             out.append(mk(cushion_offset=base["cushion_offset"] + d))              # 쿠션선 위치
+        # 당점 효과의 세기도 게임마다 다를 수 있다 (정중앙 샷엔 영향 없음)
+        for k in (0.6, 1.4):
+            out.append(mk(top_k=base["top_k"] * k, side_k=base["side_k"] * k))
         self._pert = out
         return out
 
-    def _robust(self, s, ang, pw):
+    def _robust_phys(self, s, ang, pw):
         ok = 0
         keep = self.p
         try:
@@ -190,62 +204,139 @@ class Solver:
             self.p = keep
         return ok / len(self._perturbed())
 
-    def solve(self, det, top_n=3):
-        self._pert = None
-        s = self.setup(det)
-        if s is None:
-            return [], None
-        n = int(round(360 / self.angle_step))
-        angles = [i * self.angle_step for i in range(n)]
+    def _robust_exec(self, s, ang, pw):
+        """사람이 칠 때 나는 실수: 조준 ±0.1·±0.2도, 힘 ±10%, 당점 ±1팁 (당점을 쓸 때만)."""
+        tries = [(ang + d, pw, self.english) for d in (-0.2, -0.1, 0.1, 0.2)]
+        tries += [(ang, max(5, pw * k), self.english) for k in (0.9, 1.1)]
+        ex, ey = self.english
+        if ex or ey:
+            tries += [(ang, pw, (ex + dx, ey + dy)) for dx, dy in ((-T, 0), (T, 0), (0, -T), (0, T))]
+        keep = self.english
+        ok = 0
+        try:
+            for a, p_, e in tries:
+                self.english = (max(-1.0, min(1.0, e[0])), max(-1.0, min(1.0, e[1])))
+                ok += self._ok(s, a, p_)
+        finally:
+            self.english = keep
+        return ok / len(tries)
 
-        # 1) 힘별로 전체 각도를 훑어 성공 구간(연속된 각도)을 찾는다
+    def _robust(self, s, ang, pw):
+        return self._mc_success(s, ang, pw)
+
+    MC_N = 32
+
+    def _mc_success(self, s, ang, pw, n=None):
+        """실전 흉내: 조준·힘·당점 실수와 물리값 오차를 한꺼번에 무작위로 넣어 n번 쳐 본 득점률.
+
+        조준 σ0.12°, 힘 σ7%, 당점 σ0.08(약 1/4팁), follow σ0.1, 감속 ±18%, 쿠션 반발 σ3%,
+        반사각 σ2%, 쿠션선 σ0.07r, 당점 효과 세기 σ20%.  같은 후보는 항상 같은 결과가 나오게 시드 고정.
+        """
+        n = n or self.MC_N
+        rng = random.Random(int(ang * 1000) * 131 + int(pw) * 7 + int((self.english[0] + 2) * 97 + (self.english[1] + 2) * 13))
+        base = self.p
+        keep_p, keep_e = self.p, self.english
+        ex, ey = self.english
+        ok = 0
+        try:
+            for _ in range(n):
+                q = Params.from_dict(base.to_dict())
+                q.follow = base.follow + rng.gauss(0, 0.1)
+                k = math.exp(rng.gauss(0, 0.18))
+                q.decel, q.damping = base.decel * k, base.damping * k
+                q.cushion_e = min(1.0, base.cushion_e * (1 + rng.gauss(0, 0.03)))
+                q.cushion_f = min(1.05, q.cushion_e * (base.cushion_f / max(base.cushion_e, 1e-6)) * (1 + rng.gauss(0, 0.02)))
+                q.cushion_offset = base.cushion_offset + rng.gauss(0, 0.07)
+                ks = math.exp(rng.gauss(0, 0.2))
+                q.top_k, q.side_k = base.top_k * ks, base.side_k * ks
+                self.p = q
+                if ex or ey:
+                    self.english = (max(-1.0, min(1.0, ex + rng.gauss(0, 0.08))),
+                                    max(-1.0, min(1.0, ey + rng.gauss(0, 0.08))))
+                ok += self._ok(s, ang + rng.gauss(0, 0.12), max(5.0, pw * (1 + rng.gauss(0, 0.07))))
+        finally:
+            self.p, self.english = keep_p, keep_e
+        return ok / n
+
+    def _scan(self, s, angles, powers):
+        """현재 당점으로 각도×힘을 훑어 성공 구간 후보 (중심각, 힘, 폭)."""
+        step = angles[1] - angles[0] if len(angles) > 1 else self.angle_step
         candidates = []
-        for pw in self.powers:
+        for pw in powers:
             ok = []
             for a in angles:
                 tr = self.simulate(s, a, pw)
                 good, _ = judge(tr, self.mode, s["targets"], s["forbidden"], s["need"])
                 ok.append(good)
             for start, length in _runs(ok):
-                center = (start + (length - 1) / 2.0) * self.angle_step % 360
-                candidates.append((center, pw, length * self.angle_step))
+                center = (start + (length - 1) / 2.0) * step % 360
+                candidates.append((center, pw, length * step))
+        return candidates
 
-        # 2) 후보 주변을 0.05도 간격으로 다시 훑어서 성공 폭을 정확히 재고 가운데를 잡는다
-        # 3) 그 각도에서 힘을 5%씩 바꿔가며 득점되는 힘 범위를 재고, 힘은 그 범위 가운데로 고친다
-        #    (힘이 조금 달라도 들어가는 샷 = 휘는 정도가 달라져도 버티는 샷)
+    def _finish(self, s, center, pw, win, step):
+        """후보 하나를 다듬어 Shot으로 (안 되면 None)."""
+        got = self._refine(s, center, pw, win / 2 + step * 2)
+        if got is None:
+            return None
+        ang, win = got
+        lo, hi = self._power_range(s, ang, pw)
+        mid = round((lo + (hi - lo) * self.power_pick) / 5) * 5
+        if mid != pw:
+            got2 = self._refine(s, ang, mid, max(win, 0.5))
+            if got2 is not None:
+                ang, win = got2
+                pw = mid
+                lo, hi = self._power_range(s, ang, pw)
+        tr = self.simulate(s, ang, pw)
+        good, cush = judge(tr, self.mode, s["targets"], s["forbidden"], s["need"])
+        if not good:
+            return None
+        k = _score_event_index(tr, s["targets"], s["need"])
+        length = _path_len(tr, k) / s["L"]
+        prange = hi - lo
+        extra = cush if self.mode == "4ball" else max(0, cush - 3)
+        if self.mode == "4ball" and cush >= 3:
+            extra = cush * 0.6
+        rob = self._mc_success(s, ang, pw)
+        rp = rx = rob
+        tip = math.hypot(*self.english) * 3            # 몇 팁인지
+        # 실전 득점률(안정성)을 가장 크게 보고, 짧은 경로·적은 쿠션·정중앙에 가까운 당점을 우대
+        score = ((0.05 + rob) ** 2 * (1 + 0.02 * prange)
+                 / (1 + 0.5 * length) / (1 + 0.15 * extra) / (1 + 0.05 * tip))
+        sh = Shot(ang, pw, win, int(prange // 5), score, tr, cush)
+        sh.pmin, sh.pmax = lo, hi
+        sh.robust, sh.rob_phys, sh.rob_exec = rob, rp, rx
+        sh.score_index = k
+        sh.english = self.english
+        sh.length = length
+        return sh
+
+    def solve(self, det, top_n=3):
+        self._pert = None
+        s = self.setup(det)
+        if s is None:
+            return [], None
         shots = []
-        for center, pw, win in candidates:
-            got = self._refine(s, center, pw, win / 2 + self.angle_step * 2)
-            if got is None:
-                continue
-            ang, win = got
-            lo, hi = self._power_range(s, ang, pw)
-            # 범위 위쪽 힘을 추천: 세게 칠수록 덜 휘어서 예측이 잘 맞고, 힘이 조금 모자라도 들어간다
-            mid = round((lo + (hi - lo) * self.power_pick) / 5) * 5
-            if mid != pw:
-                got2 = self._refine(s, ang, mid, max(win, 0.5))
-                if got2 is not None:
-                    ang, win = got2
-                    pw = mid
-                    lo, hi = self._power_range(s, ang, pw)
-            tr = self.simulate(s, ang, pw)
-            good, cush = judge(tr, self.mode, s["targets"], s["forbidden"], s["need"])
-            if not good:
-                continue
-            prange = hi - lo
-            pok = int(prange // 5)
-            # 성공 각도 폭이 넓고, 힘 범위가 넓고, 쿠션이 적을수록 좋은 샷
-            extra = cush if self.mode == "4ball" else max(0, cush - 3)
-            if self.mode == "4ball" and cush >= 3:
-                extra = cush * 0.6
-            rob = self._robust(s, ang, pw)
-            # 안정성(물리가 조금 틀려도 들어가나)을 가장 크게 본다
-            score = (0.1 + rob) ** 2 * win * (1 + 0.04 * prange) * (0.9 + pw / 500.0) / (1 + 0.25 * extra)
-            sh = Shot(ang, pw, win, pok, score, tr, cush)
-            sh.pmin, sh.pmax = lo, hi
-            sh.robust = rob
-            sh.score_index = _score_event_index(tr, s["targets"], s["need"])
-            shots.append(sh)
+        try:
+            # 1) 정중앙 당점: 0.25도 간격 전체 탐색
+            self.english = (0.0, 0.0)
+            n = int(round(360 / self.angle_step))
+            angles = [i * self.angle_step for i in range(n)]
+            for center, pw, win in self._scan(s, angles, self.powers):
+                sh = self._finish(s, center, pw, win, self.angle_step)
+                if sh:
+                    shots.append(sh)
+            # 2) 당점(스핀): 0.5도 간격, 힘 40/60/80/100으로 훑는다
+            if self.use_spin:
+                coarse = [i * 0.5 for i in range(720)]
+                for e in ENGLISH:
+                    self.english = e
+                    for center, pw, win in self._scan(s, coarse, (40, 60, 80, 100)):
+                        sh = self._finish(s, center, pw, win, 0.5)
+                        if sh:
+                            shots.append(sh)
+        finally:
+            self.english = (0.0, 0.0)
 
         shots.sort(key=lambda x: -x.score)
         picked = []
@@ -256,6 +347,13 @@ class Solver:
             if len(picked) >= top_n:
                 break
         return picked, s
+
+
+def _path_len(trace, k):
+    """득점 이벤트(k번째)까지 수구가 간 거리 (픽셀)."""
+    pts = trace.points
+    end = trace.events[k].idx if 0 <= k < len(trace.events) else len(pts) - 1
+    return sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(end))
 
 
 def _score_event_index(trace, targets, need=None):

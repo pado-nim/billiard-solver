@@ -2,9 +2,14 @@
 
 단위: 길이 = 테이블 안쪽 긴 변(L) 길이, 시간 = 초.
 
-- 공은 직선으로 굴러가며 감속한다 (휘지 않음, 당점은 정중앙).
+- 공은 직선으로 굴러가며 감속한다 (휘지 않음).
 - 쿠션: 법선 속도 cushion_e배, 접선 속도 cushion_f배로 반사한다.
-- 공 충돌: 맞은 공은 중심선 방향으로 나가고, 수구는 접선 성분 + 약간의 밀림(follow)으로 나간다.
+- 공 충돌: 맞은 공은 중심선 방향으로 나가고, 수구는 접선 성분 + 밀림(follow)으로 나간다.
+- 당점(english=(좌우, 상하), 각각 -1~+1, 1/3 = 1팁):
+    상하: 위(밀어치기)면 공에 맞은 뒤 앞으로 더 밀리고, 아래(끌어치기)면 뒤로 끌린다 (follow에 더해짐)
+    좌우: 쿠션에 맞을 때 회전 방향으로 옆으로 밀려 반사각이 바뀐다 (오른쪽 당점 → 쿠션에서 오른쪽으로),
+          쿠션을 맞을 때마다 회전이 줄어든다
+  회전 효과는 충돌 순간의 방향 변화로만 넣는다 (경로가 휘지 않음).
 
 단순화: 맞은 목적구는 그 뒤 경로에서 빼고(키스 무시), 나머지 공은 멈춰 있다고 본다.
 기본값은 실제 게임 화면 측정에서 정한 고정값이다.
@@ -33,6 +38,9 @@ class Params:
     follow_n: float = 0.0           # 위 값을 잰 샘플 수 (적으면 추천할 때 불확실성을 크게 잡음)
     cushion_offset: float = 0.18    # 실제 쿠션 충돌선이 인식한 쿠션선보다 안쪽으로 들어온 정도 (공 반지름 단위, 조준선에서 학습)
     stop_speed: float = 0.005       # 이 속도(L/s) 아래면 정지
+    top_k: float = 0.6              # 상하 당점 1(3팁)일 때 follow에 더해지는 양
+    side_k: float = 0.22            # 좌우 당점 1(3팁)일 때 쿠션에서 옆으로 밀리는 속도 (법선 속도 대비)
+    side_decay: float = 0.6         # 쿠션 한 번 맞을 때마다 남는 좌우 회전 비율
 
     @classmethod
     def from_dict(cls, d):
@@ -149,12 +157,13 @@ def _hit_along(px, py, dx, dy, length, box, balls, gone, R2):
 
 
 def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Params,
-               max_events=30, follow_objects=True, spin=(0.0, 0.0)):
+               max_events=30, follow_objects=True, spin=(0.0, 0.0), english=(0.0, 0.0)):
     """start에서 angle 방향(화면 좌표, 0도=오른쪽, 90도=아래)으로 초기속도 speed(L/s)로 친다.
 
     balls: [(x,y), ...] 픽셀   skip: 경로에서 제외할 공 인덱스(수구 자신 포함)
     box  : 공 중심이 움직일 수 있는 사각형 (쿠션 코에서 r만큼 안쪽, 픽셀)
-    spin : 처음 회전 속도 w (L/s, 화면 좌표). 정중앙 타격이면 0.
+    spin : 처음 회전 속도 w (L/s, 화면 좌표). 정중앙 타격이면 0. (휘는 모델용, 기본 꺼짐)
+    english: 당점 (좌우 +오른쪽, 상하 +위), 각각 -1~1. 1/3 = 1팁.
     반환 Trace.points는 휘는 구간을 잘게 나눈 꺾은선이다.
     """
     L = float(table_len)
@@ -174,6 +183,8 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
     a_s = max(p.slide_decel, 1e-3)
     events = 0
     guard = 0
+    side = float(english[0])                  # 남아 있는 좌우 회전
+    top = float(english[1])                   # 공에 처음 맞을 때 쓰이는 상하 회전
 
     while events < max_events and guard < 400:
         guard += 1
@@ -236,9 +247,11 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
         tr.points.append((px, py))
         events += 1
         if hit[1] == "wall":
-            side = hit[2]
-            tr.events.append(Event("cushion", px, py, side=side, idx=len(tr.points) - 1))
-            if side in ("L", "R"):
+            wall = hit[2]
+            tr.events.append(Event("cushion", px, py, side=wall, idx=len(tr.points) - 1))
+            onx, ony = {"L": (-1.0, 0.0), "R": (1.0, 0.0), "T": (0.0, -1.0), "B": (0.0, 1.0)}[wall]
+            vn_in = abs(vx * onx + vy * ony)
+            if wall in ("L", "R"):
                 q = p.reflect_ratio(vx, vy) * p.cushion_e
                 vx, vy = -vx * p.cushion_e, vy * q
                 wx = wx * p.cushion_spin
@@ -246,6 +259,12 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
                 q = p.reflect_ratio(vy, vx) * p.cushion_e
                 vx, vy = vx * q, -vy * p.cushion_e
                 wy = wy * p.cushion_spin
+            if abs(side) > 1e-6:
+                # 좌우 회전: 쿠션 접점에서 마찰이 회전 반대쪽으로 밀어 준다.
+                # 오른쪽 당점(위에서 보면 반시계 회전)으로 위쪽 쿠션에 맞으면 오른쪽으로 튄다.
+                kick = p.side_k * side * vn_in
+                vx, vy = vx - kick * ony, vy + kick * onx
+                side *= p.side_decay
         else:
             i = hit[2]
             bx, by = balls[i]
@@ -260,7 +279,9 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
                 sub = trace_ball((bx, by), oang, ov, balls, set(others), box, r,
                                  table_len, p, max_events=3, follow_objects=False, spin=(1e-12, 0.0))
                 tr.object_paths[i] = sub.points
-            fol = p.follow * max(vn, 0.0)
+            fol = (p.follow + p.top_k * top) * max(vn, 0.0)
+            top = 0.0                              # 상하 회전은 첫 충돌에서 쓰인다
+            side *= 0.8
             vx, vy = (vx - vn * nx + fol * nx) * p.ball_loss, (vy - vn * ny + fol * ny) * p.ball_loss
             # 회전(w)은 그대로 → 앞으로 휘어 나간다
         if math.hypot(vx, vy) <= p.stop_speed and math.hypot(vx - wx, vy - wy) <= 0.01:

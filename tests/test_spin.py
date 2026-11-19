@@ -1,0 +1,98 @@
+import math
+import random
+
+from billiard_solver.detector import detect
+from billiard_solver.physics import Params, trace_ball
+from billiard_solver.render import english_text
+from billiard_solver.solver import Solver, judge
+from tests import synth
+
+BOX = (0, 0, 1000, 500)
+
+
+def _after_top_cushion(tx):
+    t = trace_ball((500, 400), 270, 3.0, [], set(), BOX, 10, 1000, Params(), max_events=2, english=(tx, 0))
+    a, b = t.points[1], t.points[2]
+    return b[0] - a[0]
+
+
+def test_right_english_kicks_right_off_cushion():
+    """위쪽 쿠션에 수직으로 보내면 오른쪽 당점은 오른쪽으로, 왼쪽 당점은 왼쪽으로 튄다."""
+    assert _after_top_cushion(1.0) > 50
+    assert _after_top_cushion(-1.0) < -50
+    assert abs(_after_top_cushion(0.0)) < 1e-6
+
+
+def test_side_spin_fades_each_cushion():
+    t = trace_ball((500, 400), 270, 6.0, [], set(), BOX, 10, 1000, Params(), max_events=3, english=(1.0, 0))
+    p = t.points
+    d1 = p[2][0] - p[1][0]
+    d2 = p[3][0] - p[2][0]
+    assert d1 > 0 and d2 > 0                       # 쿠션 두 번 다 오른쪽으로 감
+    assert (d2 / abs(p[3][1] - p[2][1])) < (d1 / abs(p[2][1] - p[1][1])) + 1e-9   # 두 번째가 덜 꺾임 (회전 줄어듦)
+
+
+def _after_ball(ty):
+    t = trace_ball((100, 250), 0, 3.0, [(400, 265)], set(), BOX, 10, 1000, Params(), max_events=2, english=(0, ty))
+    e = t.events[0]
+    nx, ny = t.points[e.idx + 1][0] - e.x, t.points[e.idx + 1][1] - e.y
+    return math.degrees(math.atan2(ny, nx))
+
+
+def test_top_and_draw_after_ball_contact():
+    """밀어치기는 맞은 뒤 앞으로 더 가고, 끌어치기는 더 많이 꺾인다."""
+    follow, center, draw = _after_ball(1.0), _after_ball(0.0), _after_ball(-1.0)
+    assert abs(follow) < abs(center) < abs(draw)
+
+
+def test_no_curves_path_is_straight_between_events():
+    t = trace_ball((100, 100), 30, 4.0, [], set(), BOX, 10, 1000, Params(), max_events=4, english=(0.7, -0.7))
+    assert len(t.points) == len(t.events) + 2 or len(t.points) == len(t.events) + 1
+
+
+def test_english_text():
+    assert english_text((0, 0)) == "정중앙"
+    assert english_text((0, 2 / 3)) == "12시 2팁 (밀어치기)"
+    assert english_text((1 / 3, 0)) == "3시 1팁 (오른쪽)"
+    assert english_text((-2 / 3, -2 / 3)).startswith("8시 3팁") or english_text((-2 / 3, -2 / 3)).startswith("7시 3팁")
+
+
+def _table(seed):
+    rr = random.Random(seed)
+    img, inner = synth.background()
+    pts = []
+    while len(pts) < 4:
+        p = (rr.uniform(0.08, 0.92), rr.uniform(0.12, 0.88))
+        if all(abs(p[0] - q[0]) > 0.08 or abs(p[1] - q[1]) > 0.15 for q in pts):
+            pts.append(p)
+    for c, p in zip(["white", "yellow", "red", "red"], pts):
+        synth.ball(img, *synth.table_pos(inner, *p), c)
+    return detect(img)
+
+
+def test_spin_shot_actually_scores_with_its_english():
+    for seed in range(6):
+        det = _table(seed)
+        sv = Solver(Params(), "4ball_finish", "white", use_spin=True)
+        shots, s = sv.solve(det, 3)
+        for sh in shots:
+            t = trace_ball(s["pos"][s["cue"]], sh.angle, sv.p.v0(sh.power), s["pos"], {s["cue"]}, s["box"],
+                           s["r"], s["L"], sv.p, english=sh.english)
+            assert judge(t, "4ball_finish", s["targets"], s["forbidden"], s["need"])[0]
+            assert 0.0 <= sh.robust <= 1.0
+
+
+def test_spin_finds_at_least_as_many_finish_routes():
+    with_spin = without = 0
+    for seed in range(8):
+        det = _table(seed)
+        without += bool(Solver(Params(), "4ball_finish", "white", use_spin=False).solve(det, 1)[0])
+        with_spin += bool(Solver(Params(), "4ball_finish", "white", use_spin=True).solve(det, 1)[0])
+    assert with_spin >= without
+
+
+def test_stability_is_deterministic():
+    det = _table(3)
+    a = Solver(Params(), "4ball", "white").solve(det, 3)[0]
+    b = Solver(Params(), "4ball", "white").solve(det, 3)[0]
+    assert [(x.angle, x.power, x.robust, x.english) for x in a] == [(x.angle, x.power, x.robust, x.english) for x in b]

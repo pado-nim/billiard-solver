@@ -12,6 +12,7 @@ BG2 = "#2a2f36"
 FG = "#e8eaed"
 SUB = "#9aa0a6"
 ACC = "#f5c542"
+GOLD = "#ffd166"
 ON = "#3b82f6"
 AIM = "#c026d3"
 RED = "#e05252"
@@ -27,7 +28,7 @@ class Panel:
     def __init__(self, app):
         self.app = app
         w = self.win = tk.Toplevel(app.root)
-        w.title("당구 솔버")
+        w.title("당구 솔버 2.0")
         w.configure(bg=BG)
         w.attributes("-topmost", True)
         w.protocol("WM_DELETE_WINDOW", app.quit)
@@ -71,9 +72,10 @@ class Panel:
 
         top = tk.Frame(body, bg=BG)
         top.pack(fill="x")
-        label(top, "당구 솔버", 15, bold=True).pack(side="left")
+        label(top, "당구 솔버 2.0", 15, bold=True).pack(side="left")
         self.phase_lbl = label(top, "대기", 10, fg=ACC, bold=True)
         self.phase_lbl.pack(side="right")
+        label(body, "★ 스핀 에디션", 9, fg=GOLD, bold=True).pack(anchor="w")
 
         # 모드
         mf = section("모드  (고른 그대로 계산 · F6)")
@@ -92,6 +94,9 @@ class Panel:
             b.grid(row=0, column=i, padx=(0 if i == 0 else P(6), 0), sticky="nsew")
             cf.columnconfigure(i, weight=1, uniform="c")
             self.cue_btns[key] = b
+        self.spin_btn = button(cf, "스핀: 켬", app.toggle_spin, size=11, width=1)
+        self.spin_btn.grid(row=0, column=2, padx=(P(6), 0), sticky="nsew")
+        cf.columnconfigure(2, weight=1, uniform="c")
 
         # 메인 버튼
         tk.Frame(body, bg=BG, height=P(14)).pack(fill="x")
@@ -111,7 +116,21 @@ class Panel:
 
         # 인식 결과 한 줄 (공을 몇 개 찾았는지 바로 보이게)
         self.det_lbl = label(body, "", 10, fg=SUB, anchor="w", justify="left")
-        self.det_lbl.pack(fill="x", pady=(P(8), 0))
+        self.det_lbl.pack(fill="x", pady=(P(8), 0), before=af)     # 분석 버튼 바로 아래
+
+        # 추천 당점: 게임의 당점 공처럼 그려서 그대로 찍으면 되게
+        self.spin_box = tk.Frame(body, bg=BG2)
+        sb = self.spin_box
+        self.spin_cv = tk.Canvas(sb, width=P(84), height=P(84), bg=BG2, highlightthickness=0)
+        self.spin_cv.pack(side="left", padx=P(10), pady=P(8))
+        st = tk.Frame(sb, bg=BG2)
+        st.pack(side="left", fill="both", expand=True, pady=P(8))
+        label(st, "추천 당점 (1순위)", 9, fg=SUB, bold=True).pack(anchor="w")
+        self.spin_lbl = label(st, "", 13, fg=GOLD, bold=True, anchor="w", justify="left")
+        self.spin_lbl.pack(anchor="w", fill="x")
+        self.spin_sub = label(st, "", 9, fg=FG, anchor="w", justify="left")
+        self.spin_sub.pack(anchor="w", fill="x")
+        self._spin_shown = False
 
         # 보조 버튼
         self.sub_frame = tk.Frame(body, bg=BG)
@@ -172,7 +191,9 @@ class Panel:
         a = self.app
         mode, cue = a.cfg.get("mode"), a.cfg.get("cue_color")
         det_txt = self._det_text()
-        key = (phase, msg, mode, cue, a.show_all, det_txt, a.live)
+        top = a.last[1][a.selected % len(a.last[1])] if (a.last and a.last[1]) else None
+        spin_key = (round(top.english[0], 3), round(top.english[1], 3), top.power, round(top.robust, 2)) if top else None
+        key = (phase, msg, mode, cue, a.show_all, det_txt, a.live, a.cfg.get("use_spin", True), spin_key)
         if key == self._last:
             return
         self._last = key
@@ -200,6 +221,35 @@ class Panel:
 
         self.msg_lbl.configure(text=msg)
         self.det_lbl.configure(text=det_txt, fg=(SUB if det_txt.startswith("✓") else "#f59e0b"))
+        on = a.cfg.get("use_spin", True)
+        self.spin_btn.configure(text="스핀: 켬" if on else "스핀: 끔", bg=GOLD if on else BG2,
+                                fg="#1b1b1b" if on else FG)
+        self._draw_spin(top)
+
+    def _draw_spin(self, shot):
+        show = shot is not None
+        if show != self._spin_shown:
+            if show:
+                self.spin_box.pack(fill="x", pady=(self.P(8), 0), before=self.aim_btn.master)
+            else:
+                self.spin_box.pack_forget()
+            self._spin_shown = show
+        if not show:
+            return
+        from .render import english_text
+        cv, P = self.spin_cv, self.P
+        cv.delete("all")
+        c, R = P(42), P(36)
+        cv.create_oval(c - R, c - R, c + R, c + R, fill="#f2f2f2", outline="#101010", width=2)
+        for f in (2 / 3, 1 / 3):
+            cv.create_oval(c - R * f, c - R * f, c + R * f, c + R * f, outline="#b8b8b8")
+        cv.create_line(c - R, c, c + R, c, fill="#b8b8b8")
+        cv.create_line(c, c - R, c, c + R, fill="#b8b8b8")
+        tx, ty = shot.english
+        x, y, d = c + tx * R, c - ty * R, P(6)
+        cv.create_oval(x - d, y - d, x + d, y + d, fill="#e00000", outline="#600000", width=2)
+        self.spin_lbl.configure(text=english_text(shot.english))
+        self.spin_sub.configure(text=f"힘 {shot.power:.0f}%  ·  안정성 {shot.robust:.0%}  ·  쿠션 {shot.cushions}")
 
     def _fit_height(self):
         try:

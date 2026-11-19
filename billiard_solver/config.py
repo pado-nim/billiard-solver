@@ -16,6 +16,7 @@ DEFAULT = {
     "finish_targets": "reds", # 4구 마무리: reds=빨간 공 2개 / any2=상대 공 포함 아무 공 2개
     "top_n": 3,               # 보여줄 후보 수
     "monitor": 1,             # 모니터 번호 (1 = 주 모니터)
+    "use_spin": True,         # 당점(스핀)까지 추천
 }
 
 
@@ -41,4 +42,5 @@ def save(cfg):
 def make_solver(cfg):
     from .solver import Solver
     return Solver(Params(), cfg["mode"], cfg["cue_color"], cfg["angle_step"], cfg["powers"],
-                  finish_targets=cfg.get("finish_targets", "reds"), power_pick=cfg.get("power_pick", 0.65))
+                  finish_targets=cfg.get("finish_targets", "reds"), power_pick=cfg.get("power_pick", 0.65),
+                  use_spin=cfg.get("use_spin", True))
