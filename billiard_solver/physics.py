@@ -178,12 +178,12 @@ def trace_ball(start, angle_deg, speed, balls, skip, box, r, table_len, p: Param
         hit = _hit_along(px, py, dx, dy, reach, box, balls, gone, R2)
         if hit is None:
             px, py = px + dx * reach, py + dy * reach
-            tr.points.append((px, py))
-            if bend and reach < dist:            # 휘는 지점: 방향만 바꾸고 계속 (이벤트 아님)
+            if bend and reach < dist:            # 휘는 지점: 방향만 바꾸고 계속. 그림엔 안 넣는다 (맞는 지점끼리 직선)
                 v_now = p.speed_from_budget((dist - reach) / L)
                 vx, vy = bend[1] * v_now, bend[2] * v_now
                 bend = None
                 continue
+            tr.points.append((px, py))
             break
         if bend:
             bend = (bend[0] - hit[0], bend[1], bend[2])

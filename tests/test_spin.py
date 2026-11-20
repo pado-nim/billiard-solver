@@ -50,18 +50,15 @@ def test_no_curves_path_is_straight_between_events():
     assert len(t.points) == len(t.events) + 2 or len(t.points) == len(t.events) + 1
 
 
-def test_cushion_bend_starts_on_guide_then_widens_like_real_ball():
-    """실제 영상: 쿠션 직후엔 안내선 방향, 공 반지름 4개 뒤 더 넓게휜다."""
-    p = Params()
-    t = trace_ball((300, 300), 30, 1.5, [], set(), BOX, 10, 1000, p, max_events=2)
-    c, k, f = t.points[1], t.points[2], t.points[3]
-    assert abs(math.hypot(k[0] - c[0], k[1] - c[1]) - p.bend_dist * 10) < 1e-6        # 4r 지점에서 꺾임
-    tin = math.tan(math.radians(60))                                                   # 아래 쿠션에 60° 입사
-    g = abs(k[0] - c[0]) / abs(k[1] - c[1]) / tin                                      # 직후: 안내선 비율
-    w = abs(f[0] - k[0]) / abs(f[1] - k[1]) / tin                                      # 휜 뒤
-    assert abs(g - p.reflect_ratio(math.cos(math.radians(60)), math.sin(math.radians(60)))) < 0.01
-    assert w > g
-
+def test_cushion_bend_changes_where_ball_lands_but_draws_straight_lines():
+    """실제 공은 쿠션 뒤 더 넓게 튄다 → 다음 쿠션 맞는 지점은 넓은 쪽으로. 그림은 맞는 지점끼리 직선 (꺾인 점 없음)."""
+    guide = trace_ball((300, 300), 30, 1.5, [], set(), BOX, 10, 1000, Params(bend_dist=0), max_events=2)
+    real = trace_ball((300, 300), 30, 1.5, [], set(), BOX, 10, 1000, Params(), max_events=2)
+    assert len(real.points) == len(guide.points)                       # 휘는 점은 그림에 없음
+    assert all(len(t.points) <= len(t.events) + 2 for t in (guide, real))
+    gx = guide.points[2][0] - guide.points[1][0]
+    rx = real.points[2][0] - real.points[1][0]
+    assert abs(rx) > abs(gx)                                             # 실제는 더 넓게 (옆으로 더 감)
 
 def test_english_text():
     assert english_text((0, 0)) == "정중앙"
