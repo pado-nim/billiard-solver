@@ -1,2 +1,2 @@
 """Billiard Solver: 로블록스 캐롬 당구 연습용 샷 계산 오버레이."""
-__version__ = "2.3.1"
+__version__ = "2.3.2"

@@ -53,7 +53,7 @@ def test_no_curves_path_is_straight_between_events():
 def test_cushion_bend_changes_where_ball_lands_but_draws_straight_lines():
     """실제 공은 쿠션 뒤 더 넓게 튄다 → 다음 쿠션 맞는 지점은 넓은 쪽으로. 그림은 맞는 지점끼리 직선 (꺾인 점 없음)."""
     guide = trace_ball((300, 300), 30, 1.5, [], set(), BOX, 10, 1000, Params(bend_dist=0), max_events=2)
-    real = trace_ball((300, 300), 30, 1.5, [], set(), BOX, 10, 1000, Params(), max_events=2)
+    real = trace_ball((300, 300), 30, 1.5, [], set(), BOX, 10, 1000, Params(bend_dist=4.0), max_events=2)
     assert len(real.points) == len(guide.points)                       # 휘는 점은 그림에 없음
     assert all(len(t.points) <= len(t.events) + 2 for t in (guide, real))
     gx = guide.points[2][0] - guide.points[1][0]
@@ -152,3 +152,8 @@ def test_weak_shots_are_not_recommended():
     for seed in range(6):
         shots, _ = Solver(Params(), "4ball_finish", "white").solve(_table(seed), 3)
         assert all(sh.robust >= Solver.MIN_ROBUST for sh in shots)
+
+
+def test_cushion_follows_game_guide_by_default():
+    """기본값: 쿠션 반사는 흰 안내선 그대로 (v2.2.1과 같음)."""
+    assert Params().bend_dist == 0
